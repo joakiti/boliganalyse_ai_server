@@ -1,0 +1,24 @@
+# Web Framework
+fastapi>=0.111.0,<0.112.0 # Pin versions for stability.
+uvicorn[standard]>=0.29.0,<0.30.0
+
+# Supabase Integration
+supabase>=2.0.0,<3.0.0 # Corrected package name for official client
+httpx>=0.27.0,<0.28.0 # Async HTTP client (often installed by supabase, but good to specify)
+
+# Configuration & Environment
+pydantic-settings>=2.0.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0 # For loading .env locally
+
+# Authentication (JWT)
+python-jose[cryptography]>=3.3.0,<4.0.0
+
+# HTML Parsing
+beautifulsoup4>=4.12.0,<5.0.0
+lxml>=5.0.0,<6.0.0 # Faster parser for beautifulsoup
+
+# External Services
+firecrawl-py>=0.0.18,<0.1.0
+anthropic>=0.20.0,<0.21.0 # Added Anthropic client for Claude
+
+# Add other AI client libraries if needed
