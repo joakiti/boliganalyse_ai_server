@@ -1,5 +1,5 @@
 import pytest
-from app.lib.html_utils import extract_text_from_html, extract_first_image_url
+from src.app.lib.html_utils import extract_text_from_html, extract_first_image_url
 
 # --- Tests for extract_text_from_html ---
 
