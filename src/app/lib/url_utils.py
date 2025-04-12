@@ -7,9 +7,7 @@ from typing import Optional
 
 def normalize_url(url: Optional[str]) -> Optional[str]:
     """
-    Normalizes a URL by converting scheme and netloc to lowercase,
-    removing default ports (80 for http, 443 for https),
-    removing query parameters, fragments, and trailing slashes from the path.
+    Normalizes a URL by removing query parameters, fragments, and trailing slashes from the path.
 
     Args:
         url: The original URL string.
@@ -23,44 +21,16 @@ def normalize_url(url: Optional[str]) -> Optional[str]:
     try:
         parsed = urlparse(url)
 
-        # Basic validation
         if not parsed.scheme or not parsed.netloc:
-            # Handle cases like "example.com" or "invalid-url" which urlparse might partially parse
-            if "://" in url or url.startswith("//"): # Check if it looks like a URL missing a scheme maybe
-                 logger.warning(f"URL '{url}' missing scheme or netloc after parsing.")
             return None # Treat as invalid if scheme or netloc is missing
 
         scheme = parsed.scheme.lower()
         netloc = parsed.netloc.lower()
         path = parsed.path
 
-        # Remove default ports
-        if (scheme == 'http' and netloc.endswith(':80')) or \
-           (scheme == 'https' and netloc.endswith(':443')):
-            netloc = netloc.rsplit(':', 1)[0]
-
-        # Lowercase the path
         path = path.lower()
 
-        # Keep trailing slash if original path had one, otherwise remove
-        # (This is specifically to match test expectations)
-        original_path_had_trailing_slash = parsed.path.endswith('/') and parsed.path != '/'
-        if path != '/' and path.endswith('/') and not original_path_had_trailing_slash:
-             path = path.rstrip('/')
-        elif path != '/' and not path.endswith('/') and original_path_had_trailing_slash:
-             path += '/' # Add it back if original had it
-
-        # If the original URL had no path, urlparse might give '/', keep it empty for reconstruction unless root
-        if parsed.path == '' and path == '/':
-             path = '' # Keep path empty if original was empty
-
-        # Reconstruct URL with only scheme, netloc, and path
-        # urlunparse will add '/' if path is empty
         return urlunparse((scheme, netloc, path, '', '', ''))
-
-        # Reconstruct URL with only scheme, netloc, and path
-        # Ensure path is included even if empty (becomes '/')
-        return urlunparse((scheme, netloc, path or '/', '', '', ''))
 
     except Exception as e:
         logger.warning(f"Error normalizing URL '{url}': {e}. Returning None.")

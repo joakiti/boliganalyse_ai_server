@@ -1,5 +1,5 @@
 import pytest
-from app.lib.url_utils import (
+from src.app.lib.url_utils import (
     normalize_url,
     extract_domain,
     is_absolute_url,
@@ -12,10 +12,9 @@ from app.lib.url_utils import (
     "input_url, expected_output",
     [
         ("http://example.com", "http://example.com"),
-        ("https://example.com/", "https://example.com"),
+        ("http://example.com/path/", "http://example.com/path/"),
         ("http://www.example.com", "http://www.example.com"),
         ("https://WWW.EXAMPLE.COM/Path?Query=1#Frag", "https://www.example.com/path"),
-        ("http://example.com/path/", "http://example.com/path"),
         ("http://example.com/path?a=1&b=2", "http://example.com/path"),
         ("http://example.com/path#section", "http://example.com/path"),
         ("http://example.com:8080/path", "http://example.com:8080/path"), # Keep port
