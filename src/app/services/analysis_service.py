@@ -1,26 +1,23 @@
-import datetime
 import logging
 import uuid
 from typing import Optional, Dict, Any
 
 import httpx
-from postgrest import APIResponse
-from supabase import AsyncClient
 
-from src.app.lib.providers.base_provider import HtmlParseResult
 # Import provider related modules
+from src.app.lib.providers.base_provider import HtmlParseResult
 from src.app.lib.providers.provider_registry import get_provider_registry, ProviderRegistry
 # Import necessary modules
-from src.app.lib.supabase_client import get_supabase_admin_client
 from src.app.lib.url_utils import normalize_url
 from src.app.schemas.analyze import AnalysisResultData
 # Import the AI Analyzer Service
 from .ai_analyzer import AIAnalyzerService
+# Import Repository and Status Enum
+from src.app.repositories.listing_repository import ListingRepository
+from src.app.schemas.status import AnalysisStatus
 
 logger = logging.getLogger(__name__)
 
-LISTINGS_TABLE = "apartment_listings"
-DB_SCHEMA = "private"
 HTTP_TIMEOUT = 30.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
@@ -61,69 +58,43 @@ def _combine_texts(primary_result: HtmlParseResult, secondary_result: Optional[H
     return f"PRIMARY SOURCE (e.g., Boligsiden):\n{primary_text_content}\n\n---\n\nSECONDARY SOURCE (e.g., Realtor Site):\n{secondary_text_content}"
 
 
-async def prepare_analysis(url: str) -> uuid.UUID:
-    """Checks if listing exists, creates/updates DB entry, returns listing ID."""
+async def prepare_analysis(url: str, repository: ListingRepository) -> uuid.UUID:
+    """
+    Checks if a listing exists for the given URL, creates one if not,
+    and returns the listing ID. Re-queues if the existing status is an error state.
+    """
     logger.info(f"Preparing analysis for URL: {url}")
     normalized_url = normalize_url(url)
-    supabase: AsyncClient = await get_supabase_admin_client()
 
-    insert_data = {
-        "url": url,
-        "normalized_url": normalized_url,
-        "status": "queued",
-    }
+    try:
+        listing = await repository.create_or_get_listing(url, normalized_url)
+        listing_id = listing['id']
+        existing_status = AnalysisStatus(listing['status']) # Convert string status to Enum
 
-    response: APIResponse = await supabase.schema(DB_SCHEMA).from_(LISTINGS_TABLE).insert(insert_data).execute()
+        logger.info(f"Using listing ID: {listing_id}, Current Status: {existing_status.value}")
 
-    if response.data:
-        listing_id = response.data.id
-        logger.info(f"Created new listing entry with ID: {listing_id}")
-        return uuid.UUID(listing_id)
+        # Re-queue if the listing is in a final error state
+        if existing_status in [AnalysisStatus.ERROR, AnalysisStatus.TIMEOUT, AnalysisStatus.INVALID_URL, AnalysisStatus.CANCELLED]:
+            logger.info(f"Re-queuing analysis for listing {listing_id} due to status: {existing_status.value}")
+            await repository.update_status(listing_id, AnalysisStatus.QUEUED)
+        elif existing_status == AnalysisStatus.COMPLETED:
+            logger.info(f"Analysis for listing {listing_id} already completed. Not re-queuing.")
+        elif existing_status != AnalysisStatus.PENDING and existing_status != AnalysisStatus.QUEUED:
+             logger.info(f"Analysis for listing {listing_id} is already in progress (status: {existing_status.value}). Not re-queuing.")
+        # If PENDING or QUEUED, no action needed here, the task runner will pick it up.
 
-    elif response.error and response.error.code == '23505':  # Unique constraint violation
-        logger.warning(f"Listing with normalized URL {normalized_url} already exists. Checking status.")
-        select_response: APIResponse = await supabase.from_(LISTINGS_TABLE, schema=DB_SCHEMA) \
-            .select("id, status") \
-            .eq("normalized_url", normalized_url) \
-            .single()
+        return listing_id
 
-        if select_response.error:
-            logger.error(f"Error fetching existing listing for {normalized_url}", exc_info=select_response.error)
-            raise Exception(f"Failed to fetch existing listing: {select_response.error.message}")
-
-        if not select_response.data:
-            logger.error(f"Conflict error but could not fetch existing listing for {normalized_url}")
-            raise Exception("Database inconsistency detected.")
-
-        existing_id_str = select_response.data['id']
-        existing_status = select_response.data['status']
-        existing_id = uuid.UUID(existing_id_str)
-        logger.info(f"Existing listing ID: {existing_id}, Status: {existing_status}")
-
-        if existing_status in ["error", "timeout", "invalid_url"]:
-            logger.info(f"Re-queuing analysis for listing {existing_id} due to status: {existing_status}")
-            await update_status(existing_id, "queued")
-            return existing_id
-        elif existing_status == "completed":
-            logger.info(f"Analysis for listing {existing_id} already completed. Not re-queuing.")
-            return existing_id
-        else:
-            logger.info(
-                f"Analysis for listing {existing_id} is already in progress (status: {existing_status}). Not re-queuing.")
-            return existing_id
-
-    elif response.error:
-        logger.error(f"Error inserting listing for {url}", exc_info=response.error)
-        raise Exception(f"Failed to create listing entry: {response.error.message}")
-    else:
-        logger.error(f"Unexpected response during listing insert for {url}")
-        raise Exception("Failed to create or find listing entry.")
+    except Exception as e:
+        logger.error(f"Error preparing analysis for {url}: {e}", exc_info=True)
+        # Consider specific exception handling if needed
+        raise Exception(f"Failed to prepare analysis for {url}: {e}") from e
 
 
-async def start_analysis_task(listing_id: uuid.UUID, url: str):
+async def start_analysis_task(listing_id: uuid.UUID, url: str, repository: ListingRepository):
     """
     The actual analysis logic that runs in the background.
-    Fetches content, parses using providers, calls AI, updates DB.
+    Fetches content, parses using providers, calls AI, updates DB status and results.
     """
     logger.info(f"Starting background analysis task for listing ID: {listing_id}, URL: {url}")
     html_content_primary: Optional[str] = None
@@ -131,7 +102,7 @@ async def start_analysis_task(listing_id: uuid.UUID, url: str):
     parse_result_primary: Optional[HtmlParseResult] = None
     parse_result_secondary: Optional[HtmlParseResult] = None
     provider_registry: ProviderRegistry = get_provider_registry()
-    ai_analyzer: Optional[AIAnalyzerService] = None  # Initialize AI Analyzer
+    ai_analyzer: Optional[AIAnalyzerService] = None # Initialize AI Analyzer
 
     try:
         # Instantiate AI Analyzer safely
@@ -142,13 +113,13 @@ async def start_analysis_task(listing_id: uuid.UUID, url: str):
             raise RuntimeError(f"AI Service configuration error: {ai_init_error}") from ai_init_error
 
         # 1. Fetch primary HTML content
-        await update_status(listing_id, "fetching_html")
+        await repository.update_status(listing_id, AnalysisStatus.FETCHING_HTML)
         logger.info(f"[{listing_id}] Fetching primary HTML from: {url}")
         html_content_primary = await _fetch_html_content(url)
         logger.info(f"[{listing_id}] Fetched primary HTML (length: {len(html_content_primary)})")
 
         # 2. Parse primary HTML using ProviderRegistry
-        await update_status(listing_id, "parsing_data")
+        await repository.update_status(listing_id, AnalysisStatus.PARSING_DATA)
         logger.info(f"[{listing_id}] Finding provider and parsing primary HTML...")
         provider = provider_registry.get_provider_for_content(url, html_content_primary)
         parse_result_primary = await provider.parse_html(url, html_content_primary)
@@ -161,44 +132,68 @@ async def start_analysis_task(listing_id: uuid.UUID, url: str):
 
         # 3. Fetch and Parse secondary HTML if originalLink exists
         original_link = parse_result_primary.get("originalLink")
+        original_link = parse_result_primary.get("originalLink")
         if original_link and original_link != url:
-            await update_status(listing_id, "fetching_redirect_html")
+            # Status update before fetching secondary source (aligns with TS)
+            await repository.update_status(listing_id, AnalysisStatus.PREPARING_ANALYSIS)
             logger.info(f"[{listing_id}] Fetching secondary HTML from redirect: {original_link}")
-            html_content_secondary = await _fetch_html_content(original_link)
-            logger.info(f"[{listing_id}] Fetched secondary HTML (length: {len(html_content_secondary)})")
-
-            await update_status(listing_id, "parsing_redirect_data")
-            logger.info(f"[{listing_id}] Finding provider and parsing secondary HTML...")
             try:
-                source_provider = provider_registry.get_provider_for_content(original_link, html_content_secondary)
-                parse_result_secondary = await source_provider.parse_html(original_link, html_content_secondary)
-                logger.info(f"[{listing_id}] Parsed secondary HTML using provider: {source_provider.name}")
-                if parse_result_secondary and parse_result_secondary.get("error"):
+                html_content_secondary = await _fetch_html_content(original_link)
+                logger.info(f"[{listing_id}] Fetched secondary HTML (length: {len(html_content_secondary)})")
+
+                # Status update before parsing secondary source (can keep PREPARING_ANALYSIS or add another like PARSING_SECONDARY)
+                # Let's stick to PREPARING_ANALYSIS for now as per TS logic before AI call.
+                logger.info(f"[{listing_id}] Finding provider and parsing secondary HTML...")
+                # Status update before parsing secondary source (can keep PREPARING_ANALYSIS or add another like PARSING_SECONDARY)
+                # Let's stick to PREPARING_ANALYSIS for now as per TS logic before AI call.
+                logger.info(f"[{listing_id}] Finding provider and parsing secondary HTML...")
+                try:
+                    source_provider = provider_registry.get_provider_for_content(original_link, html_content_secondary)
+                    parse_result_secondary = await source_provider.parse_html(original_link, html_content_secondary)
+                    logger.info(f"[{listing_id}] Parsed secondary HTML using provider: {source_provider.name}")
+                    if parse_result_secondary and parse_result_secondary.get("error"):
+                        logger.warning(
+                            f"[{listing_id}] Secondary parsing resulted in error: {parse_result_secondary['error']}")
+                        parse_result_secondary = None # Treat parsing error as no secondary data
+                except ValueError as e:
                     logger.warning(
-                        f"[{listing_id}] Secondary parsing resulted in error: {parse_result_secondary['error']}")
+                        f"[{listing_id}] Could not find provider for secondary URL {original_link}: {e}. Proceeding without secondary data.")
                     parse_result_secondary = None
-            except ValueError as e:
-                logger.warning(
-                    f"[{listing_id}] Could not find provider for secondary URL {original_link}: {e}. Proceeding without secondary data.")
-                parse_result_secondary = None
-        else:
+                except Exception as e: # Catch other potential parsing errors
+                    logger.error(f"[{listing_id}] Error parsing secondary HTML from {original_link}: {e}", exc_info=True)
+                    parse_result_secondary = None
+
+            except (ConnectionError, ValueError, RuntimeError, httpx.TimeoutException) as fetch_exc:
+                 # Handle fetch errors for the secondary URL gracefully
+                 logger.warning(f"[{listing_id}] Failed to fetch or process secondary URL {original_link}: {fetch_exc}. Proceeding without secondary data.")
+                 html_content_secondary = None
+                 parse_result_secondary = None
+            except Exception as e: # Catch unexpected errors during secondary fetch/parse
+                 logger.error(f"[{listing_id}] Unexpected error processing secondary URL {original_link}: {e}", exc_info=True)
+                 html_content_secondary = None
+                 parse_result_secondary = None
+        else: # Corresponds to 'if original_link and original_link != url:'
             logger.info(f"[{listing_id}] No distinct original link found or same as primary URL.")
 
-        # Update metadata in DB
+        # Update metadata in DB (moved after secondary processing)
         metadata_to_update = {
             "property_image_url": parse_result_primary.get("property_image_url"),
             "url_redirect": original_link if original_link and original_link != url else None,
             "text_extracted": parse_result_primary.get("extractedText"),
             "text_extracted_redirect": parse_result_secondary.get("extractedText") if parse_result_secondary else None,
+            # Consider adding html_content if needed by repo, but keep it concise for now
         }
-        await update_listing_metadata(listing_id, metadata_to_update)
+        await repository.update_listing_metadata(listing_id, metadata_to_update)
+
 
         # 4. Prepare text and call AI Analyzer
-        await update_status(listing_id, "generating_insights")
+        await repository.update_status(listing_id, AnalysisStatus.GENERATING_INSIGHTS)
         logger.info(f"[{listing_id}] Preparing text and starting AI analysis...")
         combined_text = _combine_texts(parse_result_primary, parse_result_secondary)
 
         if not combined_text or combined_text.strip() == "":
+            # If no text could be extracted at all, mark as error
+            logger.error(f"[{listing_id}] No text content extracted from primary or secondary sources.")
             raise ValueError("No text content extracted for AI analysis.")
 
         # Call the actual AI analyzer service
@@ -213,96 +208,45 @@ async def start_analysis_task(listing_id: uuid.UUID, url: str):
             raise ValueError(f"AI response format error: {validation_error}") from validation_error
 
         # 5. Save result and finalize
-        await update_status(listing_id, "finalizing")
-        await save_result(listing_id, analysis_result.model_dump())  # Save validated data
-        await update_status(listing_id, "completed")
+        await repository.update_status(listing_id, AnalysisStatus.FINALIZING)
+        await repository.save_analysis_result(listing_id, analysis_result.model_dump()) # Save validated data
+        await repository.update_status(listing_id, AnalysisStatus.COMPLETED)
         logger.info(f"Analysis task completed successfully for listing ID: {listing_id}")
 
+    except httpx.TimeoutException as timeout_exc:
+        logger.error(f"[{listing_id}] Timeout during analysis task: {timeout_exc}", exc_info=True)
+        await repository.set_error_status(listing_id, AnalysisStatus.TIMEOUT, f"Timeout: {timeout_exc}")
+    except (ConnectionError, ValueError, RuntimeError) as processing_exc: # Catch known fetch/parse/AI errors
+        logger.error(f"[{listing_id}] Error during analysis task: {processing_exc}", exc_info=True)
+        # Determine specific error status if possible (e.g., INVALID_URL)
+        error_status = AnalysisStatus.ERROR # Default
+        if "No suitable provider found" in str(processing_exc):
+             error_status = AnalysisStatus.INVALID_URL # Or a more specific provider error status
+        elif "Failed to fetch" in str(processing_exc) or "Failed to connect" in str(processing_exc):
+             error_status = AnalysisStatus.INVALID_URL # Or potentially TIMEOUT if it was connection timeout related
+        # Add more specific checks if needed
+        await repository.set_error_status(listing_id, error_status, f"{type(processing_exc).__name__}: {processing_exc}")
     except Exception as e:
-        logger.error(f"Analysis task failed for listing ID: {listing_id}", exc_info=True)
-        await update_status(listing_id, "error", f"{type(e).__name__}: {e}")  # Log exception type and message
+        logger.error(f"[{listing_id}] Unexpected error during analysis task for listing ID: {listing_id}", exc_info=True)
+        await repository.set_error_status(listing_id, AnalysisStatus.ERROR, f"Unexpected {type(e).__name__}: {e}")
 
 
-async def get_analysis_status_and_result(listing_id: uuid.UUID) -> Dict[str, Any]:
+async def get_analysis_status_and_result(listing_id: uuid.UUID, repository: ListingRepository) -> Dict[str, Any]:
     """Fetches the current status, analysis result, and other relevant data for a listing."""
-    # (Implementation remains the same)
     logger.info(f"Fetching status and data for listing ID: {listing_id}")
-    supabase: AsyncClient = await get_supabase_admin_client()
-
-    response: APIResponse = await supabase.from_(LISTINGS_TABLE, schema=DB_SCHEMA) \
-        .select(
-        "id, status, analysis, error_message, url, realtor, created_at, updated_at, property_image_url, url_redirect") \
-        .eq("id", str(listing_id)) \
-        .single()
-
-    if response.error:
-        logger.error(f"Error fetching status for listing {listing_id}", exc_info=response.error)
-        if response.error.code == 'PGRST116':
-            raise ValueError(f"Listing with ID {listing_id} not found.")
-        raise Exception(f"Database error fetching status: {response.error.message}")
-
-    if not response.data:
-        raise ValueError(f"Listing with ID {listing_id} not found.")
-
-    return response.data
+    try:
+        listing_data = await repository.get_listing_details(listing_id)
+        if not listing_data:
+             raise ValueError(f"Listing with ID {listing_id} not found.")
+        # Ensure status is returned as string value for API response consistency
+        if 'status' in listing_data and isinstance(listing_data['status'], AnalysisStatus):
+             listing_data['status'] = listing_data['status'].value
+        return listing_data
+    except ValueError as ve: # Catch not found specifically
+        logger.warning(f"Value error fetching status for {listing_id}: {ve}")
+        raise ve
+    except Exception as e:
+        logger.error(f"Database error fetching status for listing {listing_id}: {e}", exc_info=True)
+        raise Exception(f"Database error fetching status: {e}") from e
 
 
-# --- Helper functions for DB interaction ---
-# (update_status, save_result, update_listing_metadata remain the same)
-async def update_status(listing_id: uuid.UUID, status: str, error_message: Optional[str] = None):
-    """Updates the status and optionally error message for a listing."""
-    logger.debug(
-        f"Updating status for {listing_id} to {status}" + (f" (Error: {error_message})" if error_message else ""))
-    supabase: AsyncClient = await get_supabase_admin_client()
-    update_data: Dict[str, Any] = {
-        "status": status,
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
-    }
-    if error_message is not None:
-        update_data["error_message"] = error_message[:1000]  # Truncate
-    elif status not in ["error", "timeout", "invalid_url"]:  # Clear error on non-error status
-        update_data["error_message"] = None
-
-    response: APIResponse = await supabase.from_(LISTINGS_TABLE, schema=DB_SCHEMA) \
-        .update(update_data) \
-        .eq("id", str(listing_id)) \
-        .execute()  # Add execute() to run the query
-
-    if response.error:
-        logger.error(f"Failed to update status for {listing_id} to {status}", exc_info=response.error)
-
-
-async def save_result(listing_id: uuid.UUID, result: Dict[str, Any]):
-    """Saves the analysis result JSON to the database."""
-    logger.debug(f"Saving result for {listing_id}")
-    supabase: AsyncClient = await get_supabase_admin_client()
-    response: APIResponse = await supabase.from_(LISTINGS_TABLE, schema=DB_SCHEMA) \
-        .update({
-        "analysis": result,  # Store the validated Pydantic model dict
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
-    }) \
-        .eq("id", str(listing_id)) \
-        .execute()  # Add execute() to run the query
-
-    if response.error:
-        logger.error(f"Failed to save analysis result for {listing_id}", exc_info=response.error)
-
-
-async def update_listing_metadata(listing_id: uuid.UUID, metadata: Dict[str, Any]):
-    """Updates specific metadata fields for a listing, ignoring None values."""
-    update_data = {k: v for k, v in metadata.items() if v is not None}
-
-    if not update_data:
-        logger.debug(f"No metadata to update for listing {listing_id}")
-        return
-
-    update_data["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    logger.debug(f"Updating metadata for {listing_id}: {list(update_data.keys())}")
-    supabase: AsyncClient = await get_supabase_admin_client()
-    response: APIResponse = await supabase.from_(LISTINGS_TABLE, schema=DB_SCHEMA) \
-        .update(update_data) \
-        .eq("id", str(listing_id)) \
-        .execute()  # Add execute() to run the query
-
-    if response.error:
-        logger.error(f"Failed to update metadata for {listing_id}", exc_info=response.error)
