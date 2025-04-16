@@ -4,9 +4,13 @@ import uuid # Import uuid
 
 from src.app.schemas.analyze import AnalysisRequest, AnalysisSubmitResponse, AnalysisStatusResponse
 from src.app.services.analysis_service import prepare_analysis, start_analysis_task, get_analysis_status_and_result
+from src.app.repositories.listing_repository import ListingRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Create a repository instance
+repository = ListingRepository()
 
 @router.post(
     "/analyze",
@@ -32,11 +36,11 @@ async def submit_analysis(
     logger.info(f"Received analysis submission request for URL: {request_data.url}")
     try:
         # Prepare analysis: checks DB, creates/updates entry, returns ID
-        listing_id = await prepare_analysis(request_data.url)
+        listing_id = await prepare_analysis(request_data.url, repository)
 
         # Add the heavy lifting (fetching, parsing, AI call, DB updates) to background tasks
         # Pass listing_id (UUID) and original URL
-        background_tasks.add_task(start_analysis_task, listing_id, request_data.url)
+        background_tasks.add_task(start_analysis_task, listing_id, request_data.url, repository)
         logger.info(f"Analysis task added to background queue for listing ID: {listing_id}")
 
         return AnalysisSubmitResponse(

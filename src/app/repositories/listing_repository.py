@@ -8,6 +8,7 @@ from supabase import Client  # Import Client for type hinting
 # If not, this import will need adjustment based on the actual location.
 # Assuming get_supabase_client is updated or replaced to return a sync client
 from src.app.lib.supabase_client import get_supabase_admin_client
+from src.app.schemas.status import AnalysisStatus
 
 
 class ListingRepository:
@@ -198,3 +199,22 @@ class ListingRepository:
             print(f"Error updating metadata for listing {listing_id}: {e}")
             # Decide if we should raise or just log
             # raise
+
+    async def create_or_get_listing(self, url: str, normalized_url: str) -> Dict[str, Any]:
+        """
+        Finds a listing by its normalized URL or creates a new one if it doesn't exist.
+
+        Args:
+            url: The original URL of the listing.
+            normalized_url: The normalized URL of the listing.
+
+        Returns:
+            A dictionary representing the listing.
+        """
+        # First try to find existing listing
+        existing_listing = self.find_by_normalized_url(normalized_url)
+        if existing_listing:
+            return existing_listing
+
+        # If not found, create a new listing
+        return self.create_listing(url, normalized_url)
