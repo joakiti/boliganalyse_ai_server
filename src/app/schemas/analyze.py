@@ -60,6 +60,7 @@ class AnalysisResultData(BaseModel):
 
 class AnalysisSubmitResponse(BaseModel):
     message: str
+    status: AnalysisStatus
     listing_id: uuid.UUID # Use UUID type for clarity
 
 # Use this for the GET endpoint to return status and potentially the full result

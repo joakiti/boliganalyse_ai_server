@@ -23,7 +23,7 @@ async def submit_analysis(request: AnalysisRequest, background_tasks: Background
         HTTPException: If the request is invalid or processing fails
     """
     try:
-        result = await analysis_service.submit_analysis(request)
+        result = await analysis_service.submit_analysis(request, background_tasks)
         return AnalysisSubmitResponse(**result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

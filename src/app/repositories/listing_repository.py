@@ -198,6 +198,116 @@ class ListingRepository:
             print(f"Error updating metadata for listing {listing_id}: {e}")
             raise
 
+    async def find_by_id(self, listing_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """
+        Finds a listing by its ID.
+
+        Args:
+            listing_id: The UUID of the listing.
+
+        Returns:
+            A dictionary representing the listing if found, otherwise None.
+        """
+        await self.initialize()
+        try:
+            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .select("*") \
+                .eq("id", str(listing_id)) \
+                .limit(1) \
+                .execute()
+            if response.data:
+                return response.data[0]
+            return None
+        except Exception as e:
+            print(f"Error finding listing by ID {listing_id}: {e}")
+            raise
+
+    async def update_listing(self, listing_id: uuid.UUID, **kwargs) -> None:
+        """
+        Updates a listing with the provided fields.
+
+        Args:
+            listing_id: The UUID of the listing to update.
+            **kwargs: Fields to update. Can include: html_content_primary, html_content_secondary,
+                      analysis_result, status, error_message, or any other valid column.
+        """
+        await self.initialize()
+        
+        # Ensure we have something to update
+        if not kwargs:
+            return
+            
+        # Convert status enum to value if provided
+        if "status" in kwargs and isinstance(kwargs["status"], AnalysisStatus):
+            kwargs["status"] = kwargs["status"].value
+            
+        # Always update timestamp
+        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
+        
+        try:
+            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .update(kwargs) \
+                .eq("id", str(listing_id)) \
+                .execute()
+        except Exception as e:
+            print(f"Error updating listing {listing_id}: {e}")
+            raise
+        
+    async def find_by_id(self, listing_id: uuid.UUID) -> Optional[Dict[str, Any]]:
+        """
+        Finds a listing by its ID.
+
+        Args:
+            listing_id: The UUID of the listing.
+
+        Returns:
+            A dictionary representing the listing if found, otherwise None.
+        """
+        await self.initialize()
+        try:
+            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .select("*") \
+                .eq("id", str(listing_id)) \
+                .limit(1) \
+                .execute()
+            if response.data:
+                return response.data[0]
+            return None
+        except Exception as e:
+            print(f"Error finding listing by ID {listing_id}: {e}")
+            raise
+
+    async def update_listing(self, listing_id: uuid.UUID, **kwargs) -> None:
+        """
+        Updates a listing with the provided fields.
+
+        Args:
+            listing_id: The UUID of the listing to update.
+            **kwargs: Fields to update. Can include: html_content_primary, html_content_secondary,
+                      analysis_result, status, error_message, or any other valid column.
+        """
+        await self.initialize()
+        
+        # Ensure we have something to update
+        if not kwargs:
+            return
+            
+        # Convert status enum to value if provided
+        if "status" in kwargs and isinstance(kwargs["status"], AnalysisStatus):
+            kwargs["status"] = kwargs["status"].value
+            
+        # Always update timestamp
+        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
+        
+        try:
+            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .update(kwargs) \
+                .eq("id", str(listing_id)) \
+                .execute()
+        except Exception as e:
+            print(f"Error updating listing {listing_id}: {e}")
+            raise
+        
     async def create_or_get_listing(self, url: str, normalized_url: str) -> Dict[str, Any]:
         """
         Finds a listing by its normalized URL or creates a new one if it doesn't exist.
