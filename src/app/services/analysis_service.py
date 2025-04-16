@@ -1,13 +1,13 @@
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from uuid import UUID
 
 from src.app.lib.url_utils import normalize_url
 from src.app.lib.url_validation import validate_listing_url
+from src.app.lib.html_utils import fetch_html_content
 from src.app.repositories.listing_repository import ListingRepository
 from src.app.schemas.analyze import AnalysisRequest, AnalysisStatus
 from .ai_analyzer import AIAnalyzerService
-from ..lib.providers import provider_registry
 from ..lib.providers.provider_registry import get_provider_registry
 
 logger = logging.getLogger(__name__)
@@ -64,40 +64,69 @@ class AnalysisService:
             raise RuntimeError(f"Failed to submit analysis request: {e}")
 
     async def start_analysis_task(self, listing_id: UUID) -> None:
-        """
-        Start the analysis task for a listing.
-        """
+        """Process a listing by fetching HTML, parsing, and handling source URLs."""
         try:
-            # Get listing
             listing = await self.listing_repository.find_by_id(listing_id)
             if not listing:
                 logger.error(f"Listing {listing_id} not found")
                 return
-
-            # Get content from provider
-            provider = self.provider_registry.get_provider_for_content(listing["url"])
-            if not provider:
-                raise ValueError(f"Unsupported URL or content: No provider could handle {listing['url']}")
-
-            # Get content
-            html_content_primary = await provider.get_content(listing["url"])
-            html_content_secondary = await provider.get_secondary_content(
-                listing["url"]) if provider.supports_secondary_content else None
-
-            # Update listing with content
+                
             await self.listing_repository.update_listing(
                 listing_id=listing_id,
-                html_content_primary=html_content_primary,
-                html_content_secondary=html_content_secondary
+                status=AnalysisStatus.FETCHING_HTML
             )
-
-            # Start AI analysis
+            
+            url = listing["url"]
+            html_content = await fetch_html_content(url)
+            
+            provider = self.provider_registry.get_provider_for_content(url)
+            if not provider:
+                raise ValueError(f"No provider available for URL: {url}")
+                
+            await self.listing_repository.update_listing(
+                listing_id=listing_id,
+                status=AnalysisStatus.PARSING_DATA,
+                html_content_primary=html_content
+            )
+            
+            parse_result = await provider.parse_html(url, html_content)
+            
+            source_url = parse_result.get("originalLink")
+            source_content = None
+            source_parse_result = None
+            
+            if source_url and source_url != url:
+                logger.info(f"Found source URL: {source_url}")
+                
+                await self.listing_repository.update_listing(
+                    listing_id=listing_id,
+                    status=AnalysisStatus.FETCHING_HTML,
+                    source_url=source_url
+                )
+                
+                try:
+                    source_content = await fetch_html_content(source_url)
+                    source_provider = self.provider_registry.get_provider_for_content(source_url)
+                    
+                    if source_provider:
+                        source_parse_result = await source_provider.parse_html(source_url, source_content)
+                except Exception as source_error:
+                    logger.warning(f"Error processing source URL: {source_error}")
+            
+            await self.listing_repository.update_listing(
+                listing_id=listing_id,
+                status=AnalysisStatus.GENERATING_INSIGHTS,
+                html_content_secondary=source_content
+            )
+            
+            primary_text = parse_result.get("extractedText", "")
+            secondary_text = source_parse_result.get("extractedText") if source_parse_result else None
+            
             analysis_result = await self.ai_analyzer.analyze_multiple_texts(
-                primary_text=html_content_primary,
-                secondary_text=html_content_secondary
+                primary_text=primary_text,
+                secondary_text=secondary_text
             )
-
-            # Update listing with analysis result
+            
             await self.listing_repository.update_listing(
                 listing_id=listing_id,
                 analysis_result=analysis_result,
@@ -105,9 +134,9 @@ class AnalysisService:
             )
 
         except Exception as e:
-            logger.error(f"[{listing_id}] Error during analysis task: {e}", exc_info=True)
+            logger.error(f"[{listing_id}] Error during analysis: {e}", exc_info=True)
             await self.listing_repository.update_listing(
                 listing_id=listing_id,
-                status=AnalysisStatus.FAILED,
+                status=AnalysisStatus.ERROR,
                 error_message=str(e)
             )

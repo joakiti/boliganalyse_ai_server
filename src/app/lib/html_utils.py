@@ -1,7 +1,8 @@
 import logging
+import httpx
 from typing import Optional
-from bs4 import BeautifulSoup, Comment # Import BeautifulSoup
-from .url_utils import resolve_url # Import resolve_url for relative paths
+from bs4 import BeautifulSoup, Comment
+from .url_utils import resolve_url
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,26 @@ async def extract_first_image_url(html_content: str, base_url: str) -> Optional[
         logger.error("Failed to extract first image URL with BeautifulSoup", exc_info=error)
         return None
 
-# Potential future addition: extract JSON-LD data
-# async def extract_json_ld(html_content: str) -> List[Dict[str, Any]]:
-#     ...
+# HTML fetching utility
+HTTP_TIMEOUT = 30.0  # seconds
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+async def fetch_html_content(url: str) -> str:
+    """
+    Fetch HTML content from a URL.
+    """
+    logger.info(f"Fetching HTML from {url}")
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml"
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.text
+            
+    except Exception as e:
+        logger.error(f"Error fetching URL {url}: {e}", exc_info=True)
+        raise ValueError(f"Failed to fetch content from {url}")
