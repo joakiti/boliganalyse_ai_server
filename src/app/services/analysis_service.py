@@ -8,6 +8,7 @@ from src.app.repositories.listing_repository import ListingRepository
 from src.app.schemas.analyze import AnalysisRequest, AnalysisStatus
 from .ai_analyzer import AIAnalyzerService
 from ..lib.providers import provider_registry
+from ..lib.providers.provider_registry import get_provider_registry
 
 logger = logging.getLogger(__name__)
 
@@ -19,20 +20,11 @@ class AnalysisService:
     def __init__(self):
         self.listing_repository = ListingRepository()
         self.ai_analyzer = AIAnalyzerService()
+        self.provider_registry = get_provider_registry()
 
     async def submit_analysis(self, request: AnalysisRequest, background_tasks=None) -> Dict[str, Any]:
         """
         Validate URL, normalize it, and create or get a listing in the database.
-        
-        Args:
-            request: The analysis request containing the URL
-            background_tasks: Optional FastAPI BackgroundTasks object
-            
-        Returns:
-            Dictionary with listing ID and status
-            
-        Raises:
-            ValueError: If the URL is invalid or unsupported
         """
         try:
             # Validate URL
@@ -74,9 +66,6 @@ class AnalysisService:
     async def start_analysis_task(self, listing_id: UUID) -> None:
         """
         Start the analysis task for a listing.
-        
-        Args:
-            listing_id: The ID of the listing to analyze
         """
         try:
             # Get listing
@@ -86,7 +75,7 @@ class AnalysisService:
                 return
 
             # Get content from provider
-            provider = provider_registry.get_provider_for_content(listing["url"], listing.get("html_content_primary"))
+            provider = self.provider_registry.get_provider_for_content(listing["url"])
             if not provider:
                 raise ValueError(f"Unsupported URL or content: No provider could handle {listing['url']}")
 
@@ -122,41 +111,3 @@ class AnalysisService:
                 status=AnalysisStatus.FAILED,
                 error_message=str(e)
             )
-
-    async def get_analysis_status(self, listing_id: UUID) -> Dict[str, Any]:
-        """
-        Get the status of an analysis.
-        
-        Args:
-            listing_id: The ID of the listing to check
-            
-        Returns:
-            Dictionary with status and result if available
-        """
-        try:
-            listing = await self.listing_repository.find_by_id(listing_id)
-            if not listing:
-                raise ValueError(f"Listing {listing_id} not found")
-
-            result = {
-                "status": listing["status"],
-                "listing_id": str(listing["id"])
-            }
-
-            if listing.get("analysis_result"):
-                result["result"] = listing["analysis_result"]
-
-            if listing.get("error_message"):
-                result["error"] = listing["error_message"]
-
-            return result
-
-        except ValueError as e:
-            # Handle not found errors
-            logger.warning(f"Listing not found: {e}")
-            raise
-
-        except Exception as e:
-            # Handle unexpected errors
-            logger.error(f"Error getting analysis status: {e}", exc_info=True)
-            raise RuntimeError(f"Failed to get analysis status: {e}")

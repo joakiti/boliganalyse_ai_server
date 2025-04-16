@@ -29,29 +29,3 @@ async def submit_analysis(request: AnalysisRequest, background_tasks: Background
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/analyze/{listing_id}", response_model=AnalysisStatusResponse)
-async def get_analysis_status(listing_id: UUID) -> AnalysisStatusResponse:
-    """
-    Get the status of an analysis.
-    
-    Args:
-        listing_id: The ID of the listing to check
-        
-    Returns:
-        AnalysisResponse with status and result if available
-        
-    Raises:
-        HTTPException: If the listing is not found or processing fails
-    """
-    try:
-        result = await analysis_service.get_analysis_status(listing_id)
-        return AnalysisStatusResponse(**result)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Potential future endpoints:
-# - GET /analyze/ : List recent analyses (with pagination)
-# - DELETE /analyze/{listing_id} : Cancel or delete an analysis

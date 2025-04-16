@@ -61,13 +61,14 @@ class ProviderRegistry:
         self.providers.append(provider)
         logger.debug(f"Registered provider: {provider.name}")
 
-    def get_provider_for_content(self, url: str, html_content: str) -> BaseProvider:
+    def get_provider_for_content(self, url: str, html_content: Optional[str] = None) -> BaseProvider:
         """
         Finds the first registered provider that can handle the given URL and HTML content.
 
         Args:
             url: The URL of the listing.
-            html_content: The HTML content of the page.
+            html_content: Optional HTML content of the page. Only required for
+                          providers that need to inspect content (like JSON-LD).
 
         Returns:
             The first matching BaseProvider instance.
