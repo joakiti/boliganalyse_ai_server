@@ -26,7 +26,7 @@ class BoligsidenProvider(BaseProvider):
         try:
             # Use extract_domain utility function
             domain = extract_domain(url)
-            return domain == "boligsiden.dk"
+            return domain == "www.boligsiden.dk"
         except Exception:
             return False
 

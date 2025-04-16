@@ -59,16 +59,6 @@ def extract_domain(url: Optional[str], remove_www: bool = True) -> Optional[str]
 
         hostname = hostname.lower() # Normalize to lowercase
 
-        # Temporarily disable www removal to match specific test expectation
-        # A better fix would be to adjust the test or pass remove_www=False
-        # if remove_www and hostname.startswith('www.'):
-        #     # Check if removing www. leaves something (e.g., not just 'www.')
-        #     domain_part = hostname[4:]
-        #     if domain_part:
-        #         return domain_part
-        #     else: # Handle case like "http://www."
-        #          logger.warning(f"Hostname became empty after removing 'www.' from '{hostname}'.")
-        #          return None
         return hostname
     except Exception as e:
         logger.warning(f"Error extracting domain from URL '{url}': {e}. Returning None.")
