@@ -9,6 +9,7 @@ from supabase import Client  # Import Client for type hinting
 # Assuming get_supabase_client is updated or replaced to return a sync client
 from src.app.lib.supabase_client import get_supabase_admin_client
 from src.app.schemas.status import AnalysisStatus
+from src.app.schemas.database import DatabaseSchema, TableName, SCHEMA_CONFIG
 
 
 class ListingRepository:
@@ -17,17 +18,25 @@ class ListingRepository:
     Uses the 'private.apartment_listings' table.
     """
     # Use the correct table name as defined in the tests
-    TABLE_NAME = "listings"
-    SCHEMA_NAME = "private"  # Define schema separately
+    TABLE_NAME = TableName.APARTMENT_LISTINGS.value  # Get the string value
+    SCHEMA_NAME = DatabaseSchema.PRIVATE.value  # Get the string value
 
     def __init__(self, supabase_client: Optional[Client] = None):
         """
         Initializes the repository with an optional Supabase client.
         If no client is provided, it gets one using get_supabase_client.
         """
-        self.supabase = supabase_client or get_supabase_admin_client()
+        self.supabase = supabase_client
 
-    def find_by_normalized_url(self, normalized_url: str) -> Optional[Dict[str, Any]]:
+    async def initialize(self):
+        """
+        Initialize the Supabase client if not provided in constructor.
+        This needs to be called before using any repository methods.
+        """
+        if self.supabase is None:
+            self.supabase = await get_supabase_admin_client()
+
+    async def find_by_normalized_url(self, normalized_url: str) -> Optional[Dict[str, Any]]:
         """
         Finds a listing by its normalized URL.
 
@@ -37,9 +46,10 @@ class ListingRepository:
         Returns:
             A dictionary representing the listing if found, otherwise None.
         """
+        await self.initialize()
         try:
             # Use schema() method for specifying schema
-            response = self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .select("*") \
                 .eq("normalized_url", normalized_url) \
                 .limit(1) \
@@ -52,31 +62,27 @@ class ListingRepository:
             print(f"Error finding listing by normalized URL {normalized_url}: {e}")
             raise
 
-    # Removed provider argument as it wasn't used in the test creation logic
-    # and the schema might not have it. Add back if needed.
-    def create_listing(self, url: str, normalized_url: str) -> Dict[str, Any]:
+    async def create_listing(self, url: str, normalized_url: str) -> Dict[str, Any]:
         """
         Creates a new listing record with initial status 'pending'.
 
         Args:
             url: The original URL of the listing.
             normalized_url: The normalized URL.
-            provider: The name of the provider (e.g., 'Boligsiden', 'Danbolig').
 
         Returns:
             A dictionary representing the newly created listing.
         """
+        await self.initialize()
         listing_data = {
             "url": url,
             "normalized_url": normalized_url,
-            # "provider": provider, # Removed provider
-            "status": "PENDING",  # Match AnalysisStatus enum value used in tests
-            # "status_message": "Analysis request received", # Remove if not in schema or handled differently
+            "status": AnalysisStatus.PENDING.value,  # Use the enum value
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            response = self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .insert(listing_data) \
                 .execute()
             if response.data:
@@ -88,10 +94,7 @@ class ListingRepository:
             print(f"Error creating listing for URL {url}: {e}")
             raise
 
-    # Changed status type hint to AnalysisStatus to match test usage
-    from src.app.schemas.status import AnalysisStatus  # Add this import at the top if not already there
-
-    def update_status(self, listing_id: uuid.UUID, status: AnalysisStatus,
+    async def update_status(self, listing_id: uuid.UUID, status: AnalysisStatus,
                       status_message: Optional[str] = None) -> None:
         """
         Updates the status and status message of a listing.
@@ -101,6 +104,7 @@ class ListingRepository:
             status: The new status string (e.g., 'fetching_html', 'completed').
             status_message: An optional message describing the current status.
         """
+        await self.initialize()
         update_data = {
             "status": status.value,  # Use enum value
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -109,18 +113,15 @@ class ListingRepository:
             update_data["status_message"] = status_message
 
         try:
-            self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .update(update_data) \
                 .eq("id", str(listing_id)) \
                 .execute()
         except Exception as e:
             print(f"Error updating status for listing {listing_id} to {status}: {e}")
-            # Decide if we should raise or just log
-            # raise
+            raise
 
-    # Changed status type hint to AnalysisStatus
-    # Changed error_message type hint to Exception to match test usage
-    def set_error_status(self, listing_id: uuid.UUID, status: AnalysisStatus, error_instance: Exception) -> None:
+    async def set_error_status(self, listing_id: uuid.UUID, status: AnalysisStatus, error_instance: Exception) -> None:
         """
         Sets the listing status to an error state.
 
@@ -129,6 +130,7 @@ class ListingRepository:
             status: The error status enum value (e.g., AnalysisStatus.SCRAPING_FAILED).
             error_instance: The exception instance that occurred.
         """
+        await self.initialize()
         error_message = f"{type(error_instance).__name__}: {error_instance}"
         update_data = {
             "status": status.value,
@@ -136,16 +138,15 @@ class ListingRepository:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .update(update_data) \
                 .eq("id", str(listing_id)) \
                 .execute()
         except Exception as e:
             print(f"Error setting error status for listing {listing_id}: {e}")
-            # raise # Optional: re-raise
+            raise
 
-    # Changed status type hint to AnalysisStatus
-    def save_analysis_result(self, listing_id: uuid.UUID, analysis_result: Dict[str, Any],
+    async def save_analysis_result(self, listing_id: uuid.UUID, analysis_result: Dict[str, Any],
                              status: AnalysisStatus = AnalysisStatus.COMPLETED) -> None:
         """
         Saves the analysis result JSON and sets the status to 'completed'.
@@ -155,26 +156,23 @@ class ListingRepository:
             analysis_result: The dictionary containing the analysis results.
             status: The final status enum value (defaults to AnalysisStatus.COMPLETED).
         """
+        await self.initialize()
         update_data = {
             "analysis_result": analysis_result,  # Ensure this column exists and is JSONB type
             "status": status.value,
-            # "status_message": "Analysis successfully completed", # Remove if not used
-            # "analysis_completed_at": datetime.now(timezone.utc).isoformat(), # Remove if not in schema
             "error_message": None,  # Clear previous errors
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .update(update_data) \
                 .eq("id", str(listing_id)) \
                 .execute()
         except Exception as e:
             print(f"Error saving analysis result for listing {listing_id}: {e}")
-            # Consider setting error status here?
-            # await self.set_error_status(listing_id, f"Failed to save result: {e}")
             raise
 
-    def update_listing_metadata(self, listing_id: uuid.UUID, metadata: Dict[str, Any]) -> None:
+    async def update_listing_metadata(self, listing_id: uuid.UUID, metadata: Dict[str, Any]) -> None:
         """
         Updates metadata fields for a listing (e.g., address, price).
         Does not change the status.
@@ -184,6 +182,7 @@ class ListingRepository:
             metadata: A dictionary containing metadata fields to update.
                       Keys should match column names in the table (e.g., 'address', 'price').
         """
+        await self.initialize()
         if not metadata:
             return  # Nothing to update
 
@@ -191,14 +190,13 @@ class ListingRepository:
         metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         try:
-            self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .update(metadata) \
                 .eq("id", str(listing_id)) \
                 .execute()
         except Exception as e:
             print(f"Error updating metadata for listing {listing_id}: {e}")
-            # Decide if we should raise or just log
-            # raise
+            raise
 
     async def create_or_get_listing(self, url: str, normalized_url: str) -> Dict[str, Any]:
         """
@@ -212,9 +210,9 @@ class ListingRepository:
             A dictionary representing the listing.
         """
         # First try to find existing listing
-        existing_listing = self.find_by_normalized_url(normalized_url)
+        existing_listing = await self.find_by_normalized_url(normalized_url)
         if existing_listing:
             return existing_listing
 
         # If not found, create a new listing
-        return self.create_listing(url, normalized_url)
+        return await self.create_listing(url, normalized_url)
