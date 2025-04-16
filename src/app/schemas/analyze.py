@@ -11,7 +11,6 @@ from src.app.schemas.status import AnalysisStatus
 class AnalysisRequest(BaseModel):
     """Request model for submitting a URL for analysis."""
     url: HttpUrl
-    normalized_url: Optional[HttpUrl] = None
 
     @validator('url')
     def url_must_be_string(cls, v):

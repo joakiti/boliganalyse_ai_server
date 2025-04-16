@@ -19,7 +19,6 @@ class AnalysisService:
     def __init__(self):
         self.listing_repository = ListingRepository()
         self.ai_analyzer = AIAnalyzerService()
-        self._analysis_tasks: Dict[UUID, asyncio.Task] = {}
 
     async def prepare_analysis(self, request: AnalysisRequest) -> Dict[str, Any]:
         """
@@ -40,10 +39,7 @@ class AnalysisService:
             raise ValueError(validation_result["error"])
 
         # Generate normalized URL if not provided
-        normalized_url = request.normalized_url
-        if not normalized_url:
-            # Remove protocol (http:// or https://) from URL
-            normalized_url = str(request.url).replace("https://", "").replace("http://", "")
+        normalized_url = str(request.url).replace("https://", "").replace("http://", "")
 
         # Get or create listing
         listing = await self.listing_repository.create_or_get_listing(
@@ -123,9 +119,8 @@ class AnalysisService:
             result = await self.prepare_analysis(request)
             listing_id = UUID(result["listing_id"])
 
-            # Start analysis task
-            task = asyncio.create_task(self.start_analysis_task(listing_id))
-            self._analysis_tasks[listing_id] = task
+            # Start analysis task in the background
+            asyncio.create_task(self.start_analysis_task(listing_id))
 
             return result
 
