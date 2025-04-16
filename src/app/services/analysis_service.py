@@ -1,9 +1,8 @@
 import asyncio
 import logging
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from uuid import UUID
-import httpx
-from src.app.lib.providers.base_provider import HtmlParseResult
+
 from src.app.lib.url_validation import validate_listing_url
 from src.app.repositories.listing_repository import ListingRepository
 from src.app.schemas.analyze import AnalysisRequest, AnalysisStatus
@@ -14,42 +13,6 @@ logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 30.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-
-
-async def _fetch_html_content(url: str) -> str:
-    """Fetches HTML content from a URL with timeout and user-agent."""
-    headers = {"User-Agent": USER_AGENT}
-    async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as client:
-        try:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "").lower()
-            if "text/html" not in content_type:
-                logger.warning(f"Content-Type for {url} is not text/html: {content_type}")
-            return response.text
-        except httpx.RequestError as exc:
-            logger.error(f"HTTP RequestError while fetching {url}: {exc}")
-            raise ConnectionError(f"Failed to connect to {url}: {exc}") from exc
-        except httpx.HTTPStatusError as exc:
-            logger.error(f"HTTP StatusError while fetching {url}: {exc.response.status_code}")
-            raise ValueError(f"Failed to fetch {url}: Status {exc.response.status_code}") from exc
-        except Exception as exc:
-            logger.error(f"Unexpected error fetching {url}: {exc}", exc_info=True)
-            raise RuntimeError(f"Unexpected error fetching {url}") from exc
-
-
-def _combine_texts(primary_result: HtmlParseResult, secondary_result: Optional[HtmlParseResult]) -> str:
-    """Combines extracted text from primary and secondary sources for AI input."""
-    primary_text = primary_result.get("extractedText", "")
-    if not secondary_result or not secondary_result.get("extractedText"):
-        return primary_text or ""  # Ensure empty string if primary is also empty
-
-    secondary_text = secondary_result.get("extractedText", "")
-    # Basic combination, could be refined based on provider knowledge
-    # Ensure primary_text is not None before formatting
-    primary_text_content = primary_text if primary_text else "N/A"
-    secondary_text_content = secondary_text if secondary_text else "N/A"
-    return f"PRIMARY SOURCE (e.g., Boligsiden):\n{primary_text_content}\n\n---\n\nSECONDARY SOURCE (e.g., Realtor Site):\n{secondary_text_content}"
 
 
 class AnalysisService:
@@ -76,10 +39,16 @@ class AnalysisService:
         if not validation_result["valid"]:
             raise ValueError(validation_result["error"])
 
+        # Generate normalized URL if not provided
+        normalized_url = request.normalized_url
+        if not normalized_url:
+            # Remove protocol (http:// or https://) from URL
+            normalized_url = str(request.url).replace("https://", "").replace("http://", "")
+
         # Get or create listing
         listing = await self.listing_repository.create_or_get_listing(
             url=request.url,
-            normalized_url=request.normalized_url
+            normalized_url=normalized_url
         )
 
         return {
@@ -108,7 +77,8 @@ class AnalysisService:
 
             # Get content
             html_content_primary = await provider.get_content(listing.url)
-            html_content_secondary = await provider.get_secondary_content(listing.url) if provider.supports_secondary_content else None
+            html_content_secondary = await provider.get_secondary_content(
+                listing.url) if provider.supports_secondary_content else None
 
             # Update listing with content
             await self.listing_repository.update_listing(
@@ -214,16 +184,14 @@ async def get_analysis_status_and_result(listing_id: UUID, repository: ListingRe
     try:
         listing_data = await repository.get_listing_details(listing_id)
         if not listing_data:
-             raise ValueError(f"Listing with ID {listing_id} not found.")
+            raise ValueError(f"Listing with ID {listing_id} not found.")
         # Ensure status is returned as string value for API response consistency
         if 'status' in listing_data and isinstance(listing_data['status'], AnalysisStatus):
-             listing_data['status'] = listing_data['status'].value
+            listing_data['status'] = listing_data['status'].value
         return listing_data
-    except ValueError as ve: # Catch not found specifically
+    except ValueError as ve:  # Catch not found specifically
         logger.warning(f"Value error fetching status for {listing_id}: {ve}")
         raise ve
     except Exception as e:
         logger.error(f"Database error fetching status for listing {listing_id}: {e}", exc_info=True)
         raise Exception(f"Database error fetching status: {e}") from e
-
-
