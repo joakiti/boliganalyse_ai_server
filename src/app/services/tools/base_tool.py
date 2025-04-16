@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from pydantic import ValidationError
 
-from app.schemas.tool_calling import ToolDefinition, ToolInputSchema
+from src.app.schemas.tool_calling import ToolDefinition, ToolInputSchema
 
 class BaseTool(ABC):
     """Abstract base class for all tools."""

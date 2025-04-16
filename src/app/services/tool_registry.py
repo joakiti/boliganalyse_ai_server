@@ -1,8 +1,8 @@
 import logging
 from typing import Dict, Any, Optional, List
 
-from app.schemas.tool_calling import ToolDefinition, ToolCallRequest, ToolCallResponse
-from app.services.tools.base_tool import BaseTool
+from src.app.schemas.tool_calling import ToolDefinition, ToolCallRequest, ToolCallResponse
+from src.app.services.tools.base_tool import BaseTool
 
 logger = logging.getLogger(__name__)
 
