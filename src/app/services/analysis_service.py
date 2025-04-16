@@ -108,9 +108,12 @@ async def start_analysis_task(listing_id: uuid.UUID, url: str, repository: Listi
         # Instantiate AI Analyzer safely
         try:
             ai_analyzer = AIAnalyzerService()
-        except (ImportError, ValueError) as ai_init_error:
-            logger.error(f"[{listing_id}] Failed to initialize AIAnalyzerService: {ai_init_error}")
-            raise RuntimeError(f"AI Service configuration error: {ai_init_error}") from ai_init_error
+        except ValueError as e:
+            logger.warning(f"[{listing_id}] AI analysis disabled - configuration error: {e}")
+            ai_analyzer = None
+        except Exception as e:
+            logger.error(f"[{listing_id}] Failed to initialize AIAnalyzerService: {e}")
+            raise RuntimeError(f"AI Service initialization error: {e}") from e
 
         # 1. Fetch primary HTML content
         await repository.update_status(listing_id, AnalysisStatus.FETCHING_HTML)

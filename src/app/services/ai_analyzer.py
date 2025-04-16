@@ -3,32 +3,22 @@ import json
 import asyncio
 from typing import Dict, Any, Optional, List, Union
 
-# Use try-except for optional import
-try:
-    import anthropic
-    from anthropic.types import (
-        Message,
-        TextBlock,
-        ToolUseBlock,
-        ContentBlock,
-        TextContentBlock,
-        ToolUseContentBlock,
-        ToolResultContentBlock,
-    )
-    anthropic_available = True
-except ImportError:
-    anthropic_available = False
-    anthropic = None
-    # Define dummy types if anthropic is not available to avoid runtime errors on load
-    Message = type("Message", (), {})
-    TextBlock = type("TextBlock", (), {})
-    ToolUseBlock = type("ToolUseBlock", (), {})
-    ContentBlock = type("ContentBlock", (), {})
-    TextContentBlock = type("TextContentBlock", (), {})
-    ToolUseContentBlock = type("ToolUseContentBlock", (), {})
-    ToolResultContentBlock = type("ToolResultContentBlock", (), {})
-
-
+import anthropic
+from anthropic.types import (
+    Message,
+    ContentBlock,
+    TextBlockParam,
+    Usage,
+    MessageParam,
+    MessageCreateParams,
+    ContentBlockDeltaEvent,
+    ContentBlockStartEvent,
+    ContentBlockStopEvent,
+    MessageDeltaEvent,
+    MessageStartEvent,
+    MessageStopEvent,
+    MessageStreamEvent,
+)
 from src.app.core.config import settings
 from src.app.schemas.analyze import AnalysisResultData # For potential validation
 from src.app.schemas.tool_calling import ToolCallRequest, ToolCallResponse # Assuming these are still relevant for internal logic
@@ -60,18 +50,12 @@ class AIAnalyzerService:
     Service for performing AI analysis on text using the Anthropic Claude API
     with tool calling capabilities.
     """
-    def __init__(self, tool_registry: Optional[ToolRegistryService] = None):
-        if not anthropic_available:
-            raise ImportError("Anthropic library is not installed. Cannot use AIAnalyzerService.")
+    def __init__(self):
         if not CLAUDE_API_KEY:
-            raise ValueError("ANTHROPIC_API_KEY is not configured in settings.")
-
-        # Initialize the async Anthropic client
-        self.client = anthropic.AsyncAnthropic(api_key=CLAUDE_API_KEY, timeout=API_TIMEOUT)
-        logger.info(f"Anthropic client initialized for model: {CLAUDE_MODEL}")
-
-        # Initialize or use provided ToolRegistryService
-        self.tool_registry = tool_registry if tool_registry else ToolRegistryService()
+            raise ValueError("ANTHROPIC_API_KEY is not set in environment variables.")
+        
+        self.client = anthropic.Client(api_key=CLAUDE_API_KEY)
+        self.tool_registry = ToolRegistryService()
 
         # Instantiate and register DST tools
         self.tool_registry.register_tool(GetSubjectsTool())
@@ -172,7 +156,7 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
 **VIGTIGT:** Dit svar SKAL være et JSON-objekt, der følger den specificerede struktur nedenfor. Inkluder IKKE nogen tekst før eller efter JSON-objektet. Start direkte med `{{` og slut direkte med `}}`.
 
 {{
-  "summary": "Dine vigtigeste konklusioner fra din grundige analyse af kommunen, lokalområdet, og boligopslaget",
+  "summary": "Dine vigtigste konklusioner fra din grundige analyse af kommunen, lokalområdet, og boligopslaget",
   "property": {{
     "address": "...",
     "price": "... kr.",
@@ -242,7 +226,7 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
 
     async def _make_claude_request(
         self,
-        messages: List[Dict[str, Any]],
+        messages: List[MessageParam],
         tools: List[Dict[str, Any]],
         retry_count: int = 0
     ) -> Message:
@@ -298,7 +282,7 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
              raise RuntimeError("Anthropic client not initialized.")
 
         tools = self.tool_registry.get_tool_definitions()
-        messages: List[Dict[str, Any]] = [{"role": "user", "content": initial_prompt}]
+        messages: List[MessageParam] = [{"role": "user", "content": initial_prompt}]
         final_text_response = ""
 
         while True:
@@ -309,40 +293,37 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
             # We need to construct the dictionary representation expected by the API
             assistant_response_content: List[Union[Dict[str, Any], ContentBlock]] = []
             if response.content:
-                 # Convert Pydantic models back to dicts for the next API call if needed
-                 # The library might handle this automatically, but being explicit can help debugging
-                 for block in response.content:
-                     if isinstance(block, TextContentBlock):
-                         assistant_response_content.append({"type": "text", "text": block.text})
-                     elif isinstance(block, ToolUseContentBlock):
-                         assistant_response_content.append({
-                             "type": "tool_use",
-                             "id": block.id,
-                             "name": block.name,
-                             "input": block.input
-                         })
+                # Convert Pydantic models back to dicts for the next API call if needed
+                # The library might handle this automatically, but being explicit can help debugging
+                for block in response.content:
+                    if hasattr(block, 'text'):
+                        assistant_response_content.append({"type": "text", "text": block.text})
+                    elif hasattr(block, 'name') and hasattr(block, 'input'):
+                        assistant_response_content.append({
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input
+                        })
 
             if assistant_response_content: # Only append if there's content
                 messages.append({"role": "assistant", "content": assistant_response_content})
-            # logger.debug(f"Appended Assistant Message: {json.dumps(messages[-1], indent=2)}")
-
 
             # Process the response blocks
             tool_calls_requested = False
             tool_results_content: List[Dict[str, Any]] = [] # Content for the next user message
 
             for block in response.content:
-                if isinstance(block, TextBlock):
+                if hasattr(block, 'text'):
                     logger.debug(f"Received text block: {block.text[:100]}...")
                     final_text_response += block.text # Accumulate text responses
 
-                elif isinstance(block, ToolUseBlock):
+                elif hasattr(block, 'name') and hasattr(block, 'input'):
                     tool_calls_requested = True
                     tool_name = block.name
                     tool_input = block.input
                     tool_call_id = block.id
                     logger.info(f"AI requested tool call: {tool_name} with ID: {tool_call_id}")
-                    # logger.debug(f"Tool Input: {tool_input}")
 
                     tool_request = ToolCallRequest(tool_name=tool_name, parameters=tool_input)
 
@@ -370,7 +351,6 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
                                 tool_result_str = str(tool_response.result) # Fallback
 
                             logger.info(f"Tool {tool_name} executed successfully.")
-                            # logger.debug(f"Tool Result (stringified): {tool_result_str[:200]}...")
                             # Append success result
                             tool_results_content.append({
                                 "type": "tool_result",
@@ -397,7 +377,6 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
             # If tools were called, add a user message with the results and continue loop
             if tool_results_content:
                 messages.append({"role": "user", "content": tool_results_content})
-                # logger.debug(f"Appended User Message (Tool Results): {json.dumps(messages[-1], indent=2)}")
             else:
                 # Should not happen if tool_calls_requested was True, but handle defensively
                 logger.warning("Tool calls were requested, but no results were generated. Breaking loop.")
