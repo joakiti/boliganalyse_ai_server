@@ -2,11 +2,16 @@ from pydantic import BaseModel, HttpUrl, Field, validator
 from typing import Optional, List, Dict, Any
 import uuid
 import datetime # Import datetime
+from uuid import UUID
+
+from src.app.schemas.status import AnalysisStatus
 
 # --- Request Schemas ---
 
 class AnalysisRequest(BaseModel):
-    url: HttpUrl = Field(..., description="The URL of the listing to analyze")
+    """Request model for submitting a URL for analysis."""
+    url: HttpUrl
+    normalized_url: Optional[HttpUrl] = None
 
     @validator('url')
     def url_must_be_string(cls, v):
@@ -60,10 +65,10 @@ class AnalysisSubmitResponse(BaseModel):
 
 # Use this for the GET endpoint to return status and potentially the full result
 class AnalysisStatusResponse(BaseModel):
-    listing_id: uuid.UUID
-    status: str # Consider using an Enum later for stricter status control
-    analysis: Optional[AnalysisResultData] = Field(None, description="The full analysis result, if completed")
-    error_message: Optional[str] = Field(None, description="Error message if the analysis failed")
+    listing_id: UUID
+    status: AnalysisStatus
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
     created_at: Optional[datetime.datetime] = None # Use datetime
     updated_at: Optional[datetime.datetime] = None # Use datetime
     url: Optional[HttpUrl] = None # Include the original URL for context

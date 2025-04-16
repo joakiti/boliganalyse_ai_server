@@ -1,20 +1,14 @@
+import asyncio
 import logging
-import uuid
 from typing import Optional, Dict, Any
-
+from uuid import UUID
 import httpx
-
-# Import provider related modules
 from src.app.lib.providers.base_provider import HtmlParseResult
-from src.app.lib.providers.provider_registry import get_provider_registry, ProviderRegistry
-# Import necessary modules
-from src.app.lib.url_utils import normalize_url
-from src.app.schemas.analyze import AnalysisResultData
-# Import the AI Analyzer Service
-from .ai_analyzer import AIAnalyzerService
-# Import Repository and Status Enum
+from src.app.lib.url_validation import validate_listing_url
 from src.app.repositories.listing_repository import ListingRepository
-from src.app.schemas.status import AnalysisStatus
+from src.app.schemas.analyze import AnalysisRequest, AnalysisStatus
+from .ai_analyzer import AIAnalyzerService
+from ..lib.providers import provider_registry
 
 logger = logging.getLogger(__name__)
 
@@ -58,183 +52,163 @@ def _combine_texts(primary_result: HtmlParseResult, secondary_result: Optional[H
     return f"PRIMARY SOURCE (e.g., Boligsiden):\n{primary_text_content}\n\n---\n\nSECONDARY SOURCE (e.g., Realtor Site):\n{secondary_text_content}"
 
 
-async def prepare_analysis(url: str, repository: ListingRepository) -> uuid.UUID:
-    """
-    Checks if a listing exists for the given URL, creates one if not,
-    and returns the listing ID. Re-queues if the existing status is an error state.
-    """
-    logger.info(f"Preparing analysis for URL: {url}")
-    normalized_url = normalize_url(url)
+class AnalysisService:
+    def __init__(self):
+        self.listing_repository = ListingRepository()
+        self.ai_analyzer = AIAnalyzerService()
+        self._analysis_tasks: Dict[UUID, asyncio.Task] = {}
 
-    try:
-        listing = await repository.create_or_get_listing(url, normalized_url)
-        listing_id = listing['id']
-        existing_status = AnalysisStatus(listing['status']) # Convert string status to Enum
+    async def prepare_analysis(self, request: AnalysisRequest) -> Dict[str, Any]:
+        """
+        Prepare and validate the analysis request.
+        
+        Args:
+            request: The analysis request containing the URL
+            
+        Returns:
+            Dictionary with listing ID and status
+            
+        Raises:
+            ValueError: If the URL is invalid or unsupported
+        """
+        # Validate URL
+        validation_result = validate_listing_url(request.url)
+        if not validation_result["valid"]:
+            raise ValueError(validation_result["error"])
 
-        logger.info(f"Using listing ID: {listing_id}, Current Status: {existing_status.value}")
+        # Get or create listing
+        listing = await self.listing_repository.create_or_get_listing(
+            url=request.url,
+            normalized_url=request.normalized_url
+        )
 
-        # Re-queue if the listing is in a final error state
-        if existing_status in [AnalysisStatus.ERROR, AnalysisStatus.TIMEOUT, AnalysisStatus.INVALID_URL, AnalysisStatus.CANCELLED]:
-            logger.info(f"Re-queuing analysis for listing {listing_id} due to status: {existing_status.value}")
-            await repository.update_status(listing_id, AnalysisStatus.QUEUED)
-        elif existing_status == AnalysisStatus.COMPLETED:
-            logger.info(f"Analysis for listing {listing_id} already completed. Not re-queuing.")
-        elif existing_status != AnalysisStatus.PENDING and existing_status != AnalysisStatus.QUEUED:
-             logger.info(f"Analysis for listing {listing_id} is already in progress (status: {existing_status.value}). Not re-queuing.")
-        # If PENDING or QUEUED, no action needed here, the task runner will pick it up.
-
-        return listing_id
-
-    except Exception as e:
-        logger.error(f"Error preparing analysis for {url}: {e}", exc_info=True)
-        # Consider specific exception handling if needed
-        raise Exception(f"Failed to prepare analysis for {url}: {e}") from e
-
-
-async def start_analysis_task(listing_id: uuid.UUID, url: str, repository: ListingRepository):
-    """
-    The actual analysis logic that runs in the background.
-    Fetches content, parses using providers, calls AI, updates DB status and results.
-    """
-    logger.info(f"Starting background analysis task for listing ID: {listing_id}, URL: {url}")
-    html_content_primary: Optional[str] = None
-    html_content_secondary: Optional[str] = None
-    parse_result_primary: Optional[HtmlParseResult] = None
-    parse_result_secondary: Optional[HtmlParseResult] = None
-    provider_registry: ProviderRegistry = get_provider_registry()
-    ai_analyzer: Optional[AIAnalyzerService] = None # Initialize AI Analyzer
-
-    try:
-        # Instantiate AI Analyzer safely
-        try:
-            ai_analyzer = AIAnalyzerService()
-        except ValueError as e:
-            logger.warning(f"[{listing_id}] AI analysis disabled - configuration error: {e}")
-            ai_analyzer = None
-        except Exception as e:
-            logger.error(f"[{listing_id}] Failed to initialize AIAnalyzerService: {e}")
-            raise RuntimeError(f"AI Service initialization error: {e}") from e
-
-        # 1. Fetch primary HTML content
-        await repository.update_status(listing_id, AnalysisStatus.FETCHING_HTML)
-        logger.info(f"[{listing_id}] Fetching primary HTML from: {url}")
-        html_content_primary = await _fetch_html_content(url)
-        logger.info(f"[{listing_id}] Fetched primary HTML (length: {len(html_content_primary)})")
-
-        # 2. Parse primary HTML using ProviderRegistry
-        await repository.update_status(listing_id, AnalysisStatus.PARSING_DATA)
-        logger.info(f"[{listing_id}] Finding provider and parsing primary HTML...")
-        provider = provider_registry.get_provider_for_content(url, html_content_primary)
-        parse_result_primary = await provider.parse_html(url, html_content_primary)
-        logger.info(f"[{listing_id}] Parsed primary HTML using provider: {provider.name}")
-
-        if not parse_result_primary or parse_result_primary.get("error"):
-            error_detail = parse_result_primary.get("error",
-                                                    "Unknown parsing error") if parse_result_primary else "Provider returned None"
-            raise ValueError(f"Primary parsing failed: {error_detail}")
-
-        # 3. Fetch and Parse secondary HTML if originalLink exists
-        original_link = parse_result_primary.get("originalLink")
-        original_link = parse_result_primary.get("originalLink")
-        if original_link and original_link != url:
-            # Status update before fetching secondary source (aligns with TS)
-            await repository.update_status(listing_id, AnalysisStatus.PREPARING_ANALYSIS)
-            logger.info(f"[{listing_id}] Fetching secondary HTML from redirect: {original_link}")
-            try:
-                html_content_secondary = await _fetch_html_content(original_link)
-                logger.info(f"[{listing_id}] Fetched secondary HTML (length: {len(html_content_secondary)})")
-
-                # Status update before parsing secondary source (can keep PREPARING_ANALYSIS or add another like PARSING_SECONDARY)
-                # Let's stick to PREPARING_ANALYSIS for now as per TS logic before AI call.
-                logger.info(f"[{listing_id}] Finding provider and parsing secondary HTML...")
-                # Status update before parsing secondary source (can keep PREPARING_ANALYSIS or add another like PARSING_SECONDARY)
-                # Let's stick to PREPARING_ANALYSIS for now as per TS logic before AI call.
-                logger.info(f"[{listing_id}] Finding provider and parsing secondary HTML...")
-                try:
-                    source_provider = provider_registry.get_provider_for_content(original_link, html_content_secondary)
-                    parse_result_secondary = await source_provider.parse_html(original_link, html_content_secondary)
-                    logger.info(f"[{listing_id}] Parsed secondary HTML using provider: {source_provider.name}")
-                    if parse_result_secondary and parse_result_secondary.get("error"):
-                        logger.warning(
-                            f"[{listing_id}] Secondary parsing resulted in error: {parse_result_secondary['error']}")
-                        parse_result_secondary = None # Treat parsing error as no secondary data
-                except ValueError as e:
-                    logger.warning(
-                        f"[{listing_id}] Could not find provider for secondary URL {original_link}: {e}. Proceeding without secondary data.")
-                    parse_result_secondary = None
-                except Exception as e: # Catch other potential parsing errors
-                    logger.error(f"[{listing_id}] Error parsing secondary HTML from {original_link}: {e}", exc_info=True)
-                    parse_result_secondary = None
-
-            except (ConnectionError, ValueError, RuntimeError, httpx.TimeoutException) as fetch_exc:
-                 # Handle fetch errors for the secondary URL gracefully
-                 logger.warning(f"[{listing_id}] Failed to fetch or process secondary URL {original_link}: {fetch_exc}. Proceeding without secondary data.")
-                 html_content_secondary = None
-                 parse_result_secondary = None
-            except Exception as e: # Catch unexpected errors during secondary fetch/parse
-                 logger.error(f"[{listing_id}] Unexpected error processing secondary URL {original_link}: {e}", exc_info=True)
-                 html_content_secondary = None
-                 parse_result_secondary = None
-        else: # Corresponds to 'if original_link and original_link != url:'
-            logger.info(f"[{listing_id}] No distinct original link found or same as primary URL.")
-
-        # Update metadata in DB (moved after secondary processing)
-        metadata_to_update = {
-            "property_image_url": parse_result_primary.get("property_image_url"),
-            "url_redirect": original_link if original_link and original_link != url else None,
-            "text_extracted": parse_result_primary.get("extractedText"),
-            "text_extracted_redirect": parse_result_secondary.get("extractedText") if parse_result_secondary else None,
-            # Consider adding html_content if needed by repo, but keep it concise for now
+        return {
+            "listing_id": str(listing.id),
+            "status": AnalysisStatus.PENDING
         }
-        await repository.update_listing_metadata(listing_id, metadata_to_update)
 
-
-        # 4. Prepare text and call AI Analyzer
-        await repository.update_status(listing_id, AnalysisStatus.GENERATING_INSIGHTS)
-        logger.info(f"[{listing_id}] Preparing text and starting AI analysis...")
-        combined_text = _combine_texts(parse_result_primary, parse_result_secondary)
-
-        if not combined_text or combined_text.strip() == "":
-            # If no text could be extracted at all, mark as error
-            logger.error(f"[{listing_id}] No text content extracted from primary or secondary sources.")
-            raise ValueError("No text content extracted for AI analysis.")
-
-        # Call the actual AI analyzer service
-        analysis_result_dict = await ai_analyzer.analyze_text(combined_text)
-        # Validate the result structure (optional but recommended)
+    async def start_analysis_task(self, listing_id: UUID) -> None:
+        """
+        Start the analysis task for a listing.
+        
+        Args:
+            listing_id: The ID of the listing to analyze
+        """
         try:
-            analysis_result = AnalysisResultData(**analysis_result_dict)
-            logger.info(f"[{listing_id}] AI analysis completed and validated.")
-        except Exception as validation_error:  # Catch Pydantic validation error
-            logger.error(f"[{listing_id}] AI response failed validation: {validation_error}", exc_info=True)
-            logger.error(f"[{listing_id}] Raw AI response: {analysis_result_dict}")
-            raise ValueError(f"AI response format error: {validation_error}") from validation_error
+            # Get listing
+            listing = await self.listing_repository.find_by_id(listing_id)
+            if not listing:
+                logger.error(f"Listing {listing_id} not found")
+                return
 
-        # 5. Save result and finalize
-        await repository.update_status(listing_id, AnalysisStatus.FINALIZING)
-        await repository.save_analysis_result(listing_id, analysis_result.model_dump()) # Save validated data
-        await repository.update_status(listing_id, AnalysisStatus.COMPLETED)
-        logger.info(f"Analysis task completed successfully for listing ID: {listing_id}")
+            # Get content from provider
+            provider = provider_registry.get_provider_for_content(listing.url, listing.html_content_primary)
+            if not provider:
+                raise ValueError(f"Unsupported URL or content: No provider could handle {listing.url}")
 
-    except httpx.TimeoutException as timeout_exc:
-        logger.error(f"[{listing_id}] Timeout during analysis task: {timeout_exc}", exc_info=True)
-        await repository.set_error_status(listing_id, AnalysisStatus.TIMEOUT, f"Timeout: {timeout_exc}")
-    except (ConnectionError, ValueError, RuntimeError) as processing_exc: # Catch known fetch/parse/AI errors
-        logger.error(f"[{listing_id}] Error during analysis task: {processing_exc}", exc_info=True)
-        # Determine specific error status if possible (e.g., INVALID_URL)
-        error_status = AnalysisStatus.ERROR # Default
-        if "No suitable provider found" in str(processing_exc):
-             error_status = AnalysisStatus.INVALID_URL # Or a more specific provider error status
-        elif "Failed to fetch" in str(processing_exc) or "Failed to connect" in str(processing_exc):
-             error_status = AnalysisStatus.INVALID_URL # Or potentially TIMEOUT if it was connection timeout related
-        # Add more specific checks if needed
-        await repository.set_error_status(listing_id, error_status, f"{type(processing_exc).__name__}: {processing_exc}")
-    except Exception as e:
-        logger.error(f"[{listing_id}] Unexpected error during analysis task for listing ID: {listing_id}", exc_info=True)
-        await repository.set_error_status(listing_id, AnalysisStatus.ERROR, f"Unexpected {type(e).__name__}: {e}")
+            # Get content
+            html_content_primary = await provider.get_content(listing.url)
+            html_content_secondary = await provider.get_secondary_content(listing.url) if provider.supports_secondary_content else None
+
+            # Update listing with content
+            await self.listing_repository.update_listing(
+                listing_id=listing_id,
+                html_content_primary=html_content_primary,
+                html_content_secondary=html_content_secondary
+            )
+
+            # Start AI analysis
+            analysis_result = await self.ai_analyzer.analyze_multiple_texts(
+                primary_text=html_content_primary,
+                secondary_text=html_content_secondary
+            )
+
+            # Update listing with analysis result
+            await self.listing_repository.update_listing(
+                listing_id=listing_id,
+                analysis_result=analysis_result,
+                status=AnalysisStatus.COMPLETED
+            )
+
+        except Exception as e:
+            logger.error(f"[{listing_id}] Error during analysis task: {e}", exc_info=True)
+            await self.listing_repository.update_listing(
+                listing_id=listing_id,
+                status=AnalysisStatus.FAILED,
+                error_message=str(e)
+            )
+
+    async def submit_analysis(self, request: AnalysisRequest) -> Dict[str, Any]:
+        """
+        Submit a new analysis request.
+        
+        Args:
+            request: The analysis request containing the URL
+            
+        Returns:
+            Dictionary with listing ID and status
+        """
+        try:
+            # Prepare analysis
+            result = await self.prepare_analysis(request)
+            listing_id = UUID(result["listing_id"])
+
+            # Start analysis task
+            task = asyncio.create_task(self.start_analysis_task(listing_id))
+            self._analysis_tasks[listing_id] = task
+
+            return result
+
+        except ValueError as e:
+            # Handle validation errors
+            logger.warning(f"Validation error: {e}")
+            raise
+
+        except Exception as e:
+            # Handle unexpected errors
+            logger.error(f"Error submitting analysis: {e}", exc_info=True)
+            raise RuntimeError("Failed to submit analysis request") from e
+
+    async def get_analysis_status(self, listing_id: UUID) -> Dict[str, Any]:
+        """
+        Get the status of an analysis.
+        
+        Args:
+            listing_id: The ID of the listing to check
+            
+        Returns:
+            Dictionary with status and result if available
+        """
+        try:
+            listing = await self.listing_repository.find_by_id(listing_id)
+            if not listing:
+                raise ValueError(f"Listing {listing_id} not found")
+
+            result = {
+                "status": listing.status,
+                "listing_id": str(listing.id)
+            }
+
+            if listing.analysis_result:
+                result["result"] = listing.analysis_result
+
+            if listing.error_message:
+                result["error"] = listing.error_message
+
+            return result
+
+        except ValueError as e:
+            # Handle not found errors
+            logger.warning(f"Listing not found: {e}")
+            raise
+
+        except Exception as e:
+            # Handle unexpected errors
+            logger.error(f"Error getting analysis status: {e}", exc_info=True)
+            raise RuntimeError("Failed to get analysis status") from e
 
 
-async def get_analysis_status_and_result(listing_id: uuid.UUID, repository: ListingRepository) -> Dict[str, Any]:
+async def get_analysis_status_and_result(listing_id: UUID, repository: ListingRepository) -> Dict[str, Any]:
     """Fetches the current status, analysis result, and other relevant data for a listing."""
     logger.info(f"Fetching status and data for listing ID: {listing_id}")
     try:
