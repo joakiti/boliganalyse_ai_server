@@ -53,11 +53,6 @@ class AnalysisService:
                 "status": AnalysisStatus.PENDING,
                 "message": "Analysis request submitted successfully"
             }
-            
-        except ValueError:
-            # Re-raise validation errors
-            raise
-            
         except Exception as e:
             # Log and wrap other errors
             logger.error(f"Error submitting analysis: {e}", exc_info=True)
