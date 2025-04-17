@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from uuid import UUID
 
 from src.app.lib.url_utils import normalize_url
@@ -10,6 +10,7 @@ from src.app.schemas.analyze import AnalysisRequest, AnalysisStatus
 from src.app.schemas.database import Listing
 from .ai_analyzer import AIAnalyzerService
 from ..lib.providers.provider_registry import get_provider_registry
+from ..lib.providers.base_provider import BaseProvider
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +26,9 @@ class AnalysisService:
 
     async def submit_analysis(self, request: AnalysisRequest, background_tasks=None) -> Dict[str, Any]:
         """
-        Validate URL, normalize it, and create or get a listing in the database.
+        Validate URL, normalize it, create/get listing, and queue analysis task.
         """
         try:
-            # Validate URL
             validation_result = validate_listing_url(str(request.url))
             if not validation_result["valid"]:
                 raise ValueError(validation_result["error"])
@@ -38,100 +38,97 @@ class AnalysisService:
             if not normalized_url:
                 raise ValueError("Could not normalize URL")
 
-            # Get or create listing
+            # Get or create listing (starts with PENDING status)
             listing = await self.listing_repository.create_or_get_listing(
                 url=url_str,
                 normalized_url=normalized_url
             )
-            
-            # If background_tasks is provided, add the analysis task
-            if background_tasks is not None:
-                background_tasks.add_task(self.start_analysis_task, listing.id)
+
+            # Only queue if the listing is PENDING (or maybe ERROR?)
+            # Avoid re-queueing already processing or completed listings.
+            if listing.status in [AnalysisStatus.PENDING, AnalysisStatus.ERROR]:
+                if background_tasks is not None:
+                    background_tasks.add_task(self.start_analysis_task, listing.id)
+                    logger.info(f"[{listing.id}] Analysis task added to background queue for URL: {listing.url}")
+                else:
+                    logger.warning(f"[{listing.id}] Background tasks not provided. Analysis will not run automatically.")
+            else:
+                 logger.info(f"[{listing.id}] Analysis task not queued. Listing status is '{listing.status.value}'.")
+
 
             return {
                 "listing_id": listing.id,
-                "status": AnalysisStatus.PENDING,
+                "status": listing.status.value, # Return current status
                 "message": "Analysis request submitted successfully"
             }
         except Exception as e:
-            # Log and wrap other errors
-            logger.error(f"Error submitting analysis: {e}", exc_info=True)
+            logger.error(f"Error submitting analysis request for URL {request.url}: {e}", exc_info=True)
             raise RuntimeError(f"Failed to submit analysis request: {e}")
 
+
     async def start_analysis_task(self, listing_id: UUID) -> None:
-        """Process a listing by fetching HTML, parsing, and handling source URLs."""
+        """Fetches, parses, analyzes, and saves listing data."""
+        logger.info(f"[{listing_id}] Starting analysis task.")
+        listing: Optional[Listing] = None
         try:
             listing = await self.listing_repository.find_by_id(listing_id)
             if not listing:
-                logger.error(f"Listing {listing_id} not found")
+                logger.error(f"[{listing_id}] Listing not found. Aborting analysis task.")
                 return
-                
-            await self.listing_repository.update_listing(
-                listing_id=listing_id,
-                status=AnalysisStatus.FETCHING_HTML
-            )
-            
-            url = listing["url"]
-            html_content = await fetch_html_content(url)
-            
-            provider = self.provider_registry.get_provider_for_content(url)
+
+            # Set status to PROCESSING immediately
+            listing.status = AnalysisStatus.PROCESSING
+            listing = await self.listing_repository.save(listing) # Save PROCESSING status
+
+            # --- Primary Fetch & Parse ---
+            primary_html = await fetch_html_content(listing.url)
+            listing.html_content_primary = primary_html
+            provider: Optional[BaseProvider] = self.provider_registry.get_provider_for_content(listing.url)
             if not provider:
-                raise ValueError(f"No provider available for URL: {url}")
-                
-            await self.listing_repository.update_listing(
-                listing_id=listing_id,
-                status=AnalysisStatus.PARSING_DATA,
-                html_content_primary=html_content
-            )
-            
-            parse_result = await provider.parse_html(url, html_content)
-            
-            source_url = parse_result.get("originalLink")
-            source_content = None
-            source_parse_result = None
-            
-            if source_url and source_url != url:
-                logger.info(f"Found source URL: {source_url}")
-                
-                await self.listing_repository.update_listing(
-                    listing_id=listing_id,
-                    status=AnalysisStatus.FETCHING_HTML,
-                    source_url=source_url
-                )
-                
+                raise ValueError(f"No provider available for primary URL: {listing.url}")
+            parse_result_primary = await provider.parse_html(listing.url, primary_html)
+            primary_text = parse_result_primary.get("extractedText", "")
+
+            # --- Source Fetch & Parse (Optional) ---
+            source_url = parse_result_primary.get("originalLink")
+            secondary_text = None
+            if source_url and source_url != listing.url:
+                listing.source_url = source_url
                 try:
-                    source_content = await fetch_html_content(source_url)
-                    source_provider = self.provider_registry.get_provider_for_content(source_url)
-                    
+                    logger.info(f"[{listing_id}] Processing source URL: {source_url}")
+                    source_html = await fetch_html_content(source_url)
+                    listing.html_content_secondary = source_html
+                    source_provider: Optional[BaseProvider] = self.provider_registry.get_provider_for_content(source_url)
                     if source_provider:
-                        source_parse_result = await source_provider.parse_html(source_url, source_content)
+                        source_parse_result = await source_provider.parse_html(source_url, source_html)
+                        secondary_text = source_parse_result.get("extractedText")
+                    else:
+                        logger.warning(f"[{listing_id}] No provider found for source URL: {source_url}")
                 except Exception as source_error:
-                    logger.warning(f"Error processing source URL: {source_error}")
-            
-            await self.listing_repository.update_listing(
-                listing_id=listing_id,
-                status=AnalysisStatus.GENERATING_INSIGHTS,
-                html_content_secondary=source_content
-            )
-            
-            primary_text = parse_result.get("extractedText", "")
-            secondary_text = source_parse_result.get("extractedText") if source_parse_result else None
-            
+                    logger.warning(f"[{listing_id}] Failed to process source URL {source_url}: {source_error}", exc_info=False) # Log less verbosely
+                    listing.html_content_secondary = f"Error fetching/parsing source: {source_error}" # Store error info
+
+            # --- AI Analysis ---
             analysis_result = await self.ai_analyzer.analyze_multiple_texts(
                 primary_text=primary_text,
                 secondary_text=secondary_text
             )
-            
-            await self.listing_repository.update_listing(
-                listing_id=listing_id,
-                analysis_result=analysis_result,
-                status=AnalysisStatus.COMPLETED
-            )
+            listing.analysis_result = analysis_result
+
+            # --- Finalize ---
+            listing.status = AnalysisStatus.COMPLETED
+            listing.error_message = None # Clear any previous error
+            await self.listing_repository.save(listing)
+            logger.info(f"[{listing_id}] Analysis task completed successfully.")
 
         except Exception as e:
-            logger.error(f"[{listing_id}] Error during analysis: {e}", exc_info=True)
-            await self.listing_repository.update_listing(
-                listing_id=listing_id,
-                status=AnalysisStatus.ERROR,
-                error_message=str(e)
-            )
+            logger.error(f"[{listing_id}] Error during analysis task: {e}", exc_info=True)
+            if listing:
+                try:
+                    listing.status = AnalysisStatus.ERROR
+                    listing.error_message = str(e)
+                    await self.listing_repository.save(listing)
+                    logger.info(f"[{listing_id}] Saved listing with ERROR status.")
+                except Exception as save_err:
+                    logger.critical(f"[{listing_id}] CRITICAL: Failed to save ERROR status after analysis failure: {save_err}", exc_info=True)
+            # No else needed, if listing is None, the error is already logged.

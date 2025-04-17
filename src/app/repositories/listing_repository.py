@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class ListingRepository:
     """Repository for managing apartment listings in the database."""
-    
+
     TABLE_NAME = TableName.APARTMENT_LISTINGS.value
     SCHEMA_NAME = DatabaseSchema.PRIVATE.value
 
@@ -33,7 +33,7 @@ class ListingRepository:
                 .eq("id", str(listing_id)) \
                 .limit(1) \
                 .execute()
-            
+
             if response.data:
                 return Listing.from_db_dict(response.data[0])
             return None
@@ -49,7 +49,7 @@ class ListingRepository:
                 .eq("normalized_url", normalized_url) \
                 .limit(1) \
                 .execute()
-                
+
             if response.data:
                 return Listing.from_db_dict(response.data[0])
             return None
@@ -60,10 +60,10 @@ class ListingRepository:
     async def save(self, listing: Listing) -> Listing:
         """
         Save a listing - creates a new one if id is None, otherwise updates existing.
-        
+
         Args:
             listing: The Listing entity to save
-        
+
         Returns:
             The saved Listing with updated fields
         """
@@ -71,26 +71,26 @@ class ListingRepository:
             return await self.create(listing)
         else:
             return await self.update(listing)
-            
+
     async def create(self, listing: Listing) -> Listing:
         """
         Create a new listing.
-        
+
         Args:
             listing: The Listing entity to create
-            
+
         Returns:
             The created Listing with ID and timestamps
         """
         await self.initialize()
-            
+
         db_dict = listing.to_db_dict()
-        
+
         try:
             response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .insert(db_dict) \
                 .execute()
-                
+
             if response.data:
                 return Listing.from_db_dict(response.data[0])
             else:
@@ -99,34 +99,71 @@ class ListingRepository:
         except Exception as e:
             logger.error(f"Error creating listing for URL {listing.url}: {e}")
             raise
-            
+
     async def update(self, listing: Listing) -> Listing:
         """
         Update an existing listing.
-        
+
         Args:
             listing: The Listing entity to update
-            
+
         Returns:
             The updated Listing
         """
         await self.initialize()
-        
+
         listing.updated_at = datetime.now(timezone.utc).isoformat()
         db_dict = listing.to_db_dict()
-        
+
         try:
             response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
                 .update(db_dict) \
                 .eq("id", str(listing.id)) \
                 .execute()
-                
+
             if response.data:
                 return Listing.from_db_dict(response.data[0])
             else:
                 raise Exception(f"Failed to update listing {listing.id}, no data returned")
         except Exception as e:
             logger.error(f"Error updating listing {listing.id}: {e}")
+            raise
+
+    async def update_status(self, listing_id: uuid.UUID, status: AnalysisStatus) -> Listing:
+        """
+        Update the status of an existing listing.
+
+        Args:
+            listing_id: The ID of the listing to update.
+            status: The new AnalysisStatus value.
+
+        Returns:
+            The updated Listing object.
+        """
+        await self.initialize()
+
+        update_payload = {
+            'status': status.value,
+            'updated_at': datetime.now(timezone.utc).isoformat()
+        }
+
+        try:
+            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .update(update_payload) \
+                .eq("id", str(listing_id)) \
+                .execute()
+
+            if response.data:
+                # Successfully updated, return the updated listing object
+                return Listing.from_db_dict(response.data[0])
+            else:
+                # If Supabase update doesn't return data, raise an error directly.
+                # This indicates an issue with the update operation or Supabase itself.
+                raise Exception(f"Failed to update status for listing {listing_id} to {status.value}. Supabase returned no data.")
+        except Exception as e:
+            # Log the specific error from Supabase or other issues
+            logger.error(f"Error updating status for listing {listing_id} to {status.value}: {e}")
+            # Re-raise the exception to be handled by the caller
             raise
 
 
