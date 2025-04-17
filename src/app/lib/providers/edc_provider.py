@@ -21,9 +21,6 @@ class EdcProvider(JsonLdProvider):
         try:
             domain = extract_domain(url)
             if domain == "edc.dk":
-                # If domain matches, delegate to parent (JsonLdProvider)
-                # to check if JSON-LD is actually present in the content.
-                # This ensures we only handle EDC pages that provide JSON-LD.
                 has_json_ld = super().can_handle(url, html_content)
                 if not has_json_ld:
                      logger.debug(f"URL is edc.dk but no JSON-LD found: {url}")
@@ -31,7 +28,3 @@ class EdcProvider(JsonLdProvider):
             return False
         except Exception:
             return False
-
-    # No need to override parse_html or extract_image_url unless EDC
-    # requires specific handling different from the generic JsonLdProvider.
-    # For now, we assume the parent implementation is sufficient.

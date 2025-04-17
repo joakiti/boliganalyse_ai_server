@@ -3,7 +3,10 @@ import json
 from typing import Dict, Any, Optional, List
 from bs4 import BeautifulSoup
 
-from .base_provider import BaseProvider, HtmlParseResult
+from pydantic import HttpUrl # Import HttpUrl for validation
+
+from .base_provider import BaseProvider
+from src.app.schemas.parser import ParseResult # Import the new schema
 from src.app.lib import html_utils # Import the new html_utils
 
 logger = logging.getLogger(__name__)
@@ -79,7 +82,7 @@ class JsonLdProvider(BaseProvider):
             logger.error("Failed to extract image URL in JsonLdProvider", exc_info=error)
             return None
 
-    async def parse_html(self, url: str, html_content: str) -> HtmlParseResult:
+    async def parse_html(self, url: str, html_content: str) -> ParseResult:
         """
         Parses HTML, extracts JSON-LD, combines it with general text content.
         """
@@ -117,19 +120,23 @@ class JsonLdProvider(BaseProvider):
             json_ld_string = json.dumps(extracted_json_ld_list, indent=2, ensure_ascii=False)
             combined_text = f"JSON-LD Data:\n{json_ld_string}\n\nExtracted Page Text:\n{extracted_text}"
 
-            return {
-                "originalLink": url, # JSON-LD sites are usually the direct source
-                "property_image_url": property_image_url,
-                "extractedText": combined_text,
-                "json_ld_data": extracted_json_ld_list # Optionally return raw JSON-LD
-            }
+            # Validate URL before assigning
+            validated_url: Optional[HttpUrl] = None
+            try:
+                validated_url = HttpUrl(url)
+            except Exception:
+                 logger.warning(f"Input URL '{url}' is not a valid HttpUrl for ParseResult.")
+
+
+            return ParseResult(
+                original_link=validated_url, # JSON-LD sites are usually the direct source
+                extracted_text=combined_text
+                # property_image_url and json_ld_data are not part of ParseResult schema
+            )
 
         except Exception as error:
             logger.error(f"Failed to parse HTML with JsonLdProvider for {url}", exc_info=error)
-            # Return None values for data fields to match TS returning {}
-            return {
-                "originalLink": None,
-                "property_image_url": None,
-                "extractedText": None,
-                "json_ld_data": None
-            }
+            # Return empty ParseResult on failure
+            return ParseResult(
+                 extracted_text=f"Failed to parse content from {url} using JsonLdProvider: {error}"
+            )

@@ -1,10 +1,12 @@
 import logging
 from typing import Optional
 from bs4 import BeautifulSoup
+from pydantic import HttpUrl
 
-from .base_provider import BaseProvider, HtmlParseResult
-from src.app.lib import html_utils # Import the html_utils
-from src.app.lib.url_utils import extract_domain # Import url utils
+from .base_provider import BaseProvider
+from src.app.schemas.parser import ParseResult
+from src.app.lib import html_utils
+from src.app.lib.url_utils import extract_domain
 
 logger = logging.getLogger(__name__)
 
@@ -65,35 +67,29 @@ class HomeProvider(BaseProvider):
             logger.error("Failed to extract image URL in HomeProvider", exc_info=error)
             return None
 
-    async def parse_html(self, url: str, html_content: str) -> HtmlParseResult:
+    async def parse_html(self, url: str, html_content: str) -> ParseResult:
         """
         Parses Home.dk HTML, extracts text using generic utils, and image using specific logic.
         """
         logger.info(f"Parsing HTML with HomeProvider for URL: {url}")
-        property_image_url: Optional[str] = None
-        extracted_text: str = ""
-
         try:
-            # Extract image using the overridden method
-            property_image_url = await self.extract_image_url(html_content)
-
-            # Extract text using generic utility
             extracted_text = await html_utils.extract_text_from_html(html_content)
-
-            # For direct realtor links like Home.dk, the originalLink is the URL itself
             original_link = url
+            validated_original_link: Optional[HttpUrl] = None
 
-            return {
-                "originalLink": original_link,
-                "property_image_url": property_image_url,
-                "extractedText": extracted_text,
-            }
+            if original_link:
+                try:
+                    validated_original_link = HttpUrl(original_link)
+                except Exception:
+                    logger.warning(f"Input URL '{original_link}' is not a valid HttpUrl for ParseResult.")
+
+            return ParseResult(
+                original_link=validated_original_link,
+                extracted_text=extracted_text
+            )
 
         except Exception as error:
             logger.error(f"Failed to parse HTML with HomeProvider for {url}", exc_info=error)
-            # Return None values for data fields to match TS returning {}
-            return {
-                "originalLink": None,
-                "property_image_url": None,
-                "extractedText": None,
-            }
+            return ParseResult(
+                 extracted_text=f"Failed to parse content from {url} using HomeProvider: {error}"
+            )

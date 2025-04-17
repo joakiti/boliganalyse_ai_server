@@ -3,10 +3,11 @@ import re
 import httpx
 from typing import Optional
 from urllib.parse import urlparse, parse_qs
-
-from .base_provider import BaseProvider, HtmlParseResult
-from src.app.lib import html_utils # Import the html_utils
-from src.app.lib.url_utils import extract_domain # Assuming url_utils exists or will be created
+from pydantic import HttpUrl
+from .base_provider import BaseProvider
+from src.app.schemas.parser import ParseResult
+from src.app.lib import html_utils
+from src.app.lib.url_utils import extract_domain
 
 logger = logging.getLogger(__name__)
 
@@ -62,41 +63,21 @@ class BoligsidenProvider(BaseProvider):
                      return None
 
                 return final_url
-
-        except httpx.RequestError as exc:
-            logger.error(f"HTTP RequestError while extracting source URL from {url}: {exc}")
-            return None
-        except httpx.HTTPStatusError as exc:
-             logger.error(f"HTTP StatusError while extracting source URL from {url}: {exc.response.status_code}")
-             return None
         except Exception as error:
             logger.error(f"Failed to extract source URL from {url}", exc_info=error)
             return None
 
-    async def parse_html(self, url: str, html_content: str) -> HtmlParseResult:
-        """
-        Parses Boligsiden HTML, extracts text, image, and original source URL.
-        """
-        logger.info(f"Parsing HTML with BoligsidenProvider for URL: {url}")
-        original_link: Optional[str] = None
-        property_image_url: Optional[str] = None
-        extracted_text: str = ""
+    async def parse_html(self, url: str, html_content: str) -> ParseResult:
 
         try:
-            # Extract image URL (using base implementation for now)
-            property_image_url = await self.extract_image_url(html_content)
-
-            # Extract text content
             extracted_text = await html_utils.extract_text_from_html(html_content)
 
-            # Extract original source link by following redirect
             original_link = await self._extract_source_url(url)
 
             # Clean specific phrases from extracted text
             phrases_to_remove = [
                 re.compile(r"Se hvilke internetforbindelser, der er tilgængelige på adressen\. Bemærk, at mobildækning ikke er oplyst\.", re.IGNORECASE),
                 re.compile(r"RadonrisikoRadonrisikoen vurderes til at være ukendtUkendt", re.IGNORECASE),
-                # Add more phrases if needed
             ]
             cleaned_text = extracted_text
             for phrase_re in phrases_to_remove:
@@ -105,17 +86,22 @@ class BoligsidenProvider(BaseProvider):
             # Consolidate whitespace again after removals
             cleaned_text = ' '.join(cleaned_text.split())
 
-            return {
-                "originalLink": original_link,
-                "property_image_url": property_image_url,
-                "extractedText": cleaned_text,
-            }
+            validated_original_link: Optional[HttpUrl] = None
+
+            if original_link:
+                try:
+                    validated_original_link = HttpUrl(original_link)
+                except Exception:
+                    logger.warning(f"Extracted original link '{original_link}' is not a valid HttpUrl.")
+
+            return ParseResult(
+                original_link=validated_original_link,
+                extracted_text=cleaned_text
+            )
 
         except Exception as error:
             logger.error(f"Failed to parse HTML with BoligsidenProvider for {url}", exc_info=error)
-            # Return None values for data fields to match TS returning {}
-            return {
-                "originalLink": None,
-                "property_image_url": None,
-                "extractedText": None,
-            }
+            # Return ParseResult with error message in extracted_text
+            return ParseResult(
+                 extracted_text=f"Failed to parse content from {url} using BoligsidenProvider: {error}"
+            )

@@ -2,13 +2,13 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Awaitable
 
+from src.app.schemas.parser import ParseResult # Import the new schema
+
 # Assuming html_utils will be created later
 # from app.lib import html_utils
 
 logger = logging.getLogger(__name__)
 
-# Define a type alias for the parse result for clarity
-HtmlParseResult = Dict[str, Any]
 
 class BaseProvider(ABC):
     """Abstract base class for all real estate listing providers."""
@@ -35,7 +35,7 @@ class BaseProvider(ABC):
         pass
 
     @abstractmethod
-    async def parse_html(self, url: str, html_content: str) -> HtmlParseResult:
+    async def parse_html(self, url: str, html_content: str) -> ParseResult:
         """
         Parse HTML content to extract structured data.
 
@@ -44,11 +44,9 @@ class BaseProvider(ABC):
             html_content: The HTML content string to parse.
 
         Returns:
-            A dictionary containing extracted data. Expected keys might include:
-            'originalLink': URL of the original listing if redirected (e.g., from Boligsiden).
-            'property_image_url': URL of the main property image.
-            'extractedText': Main textual content extracted from the page.
-            Specific providers might add more structured fields.
+            A ParseResult object containing extracted data, primarily:
+             - original_link: URL of the original listing if redirected.
+             - extracted_text: Main textual content extracted from the page.
         """
         pass
 

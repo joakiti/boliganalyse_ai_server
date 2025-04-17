@@ -3,6 +3,7 @@ from typing import Optional
 
 from .firecrawl_provider import FirecrawlProvider # Inherit from Firecrawl
 from src.app.lib.url_utils import extract_domain # Import url utils
+from src.app.schemas.parser import ParseResult # Import the new schema
 
 logger = logging.getLogger(__name__)
 
@@ -29,30 +30,36 @@ class DanboligProvider(FirecrawlProvider):
         except Exception:
             return False
 
-    async def parse_html(self, url: str, html_content: Optional[str] = None) -> dict:
+    async def parse_html(self, url: str, html_content: Optional[str] = None) -> ParseResult:
         """
         Uses Firecrawl to get markdown, then cleans it specifically for Danbolig.
         """
-        self.logger.info(f"Parsing HTML with DanboligProvider (using Firecrawl) for URL: {url}")
-        # Call the parent's parse_html (which uses Firecrawl)
-        # Pass None for html_content as Firecrawl fetches it
-        result = await super().parse_html(url, None)
+        firecrawl_result: ParseResult = await super().parse_html(url)
 
-        # Check if Firecrawl succeeded and returned text
-        if result.get("error"):
-            self.logger.warning(f"Firecrawl failed for {url}, returning error.")
-            return result # Propagate the error
+        if not firecrawl_result.extracted_text or "Failed to scrape content" in firecrawl_result.extracted_text:
+            self.logger.warning(f"Firecrawl failed or returned error for {url}. Returning result as is.")
+            return firecrawl_result
 
-        extracted_text = result.get("extractedText")
+        extracted_text = firecrawl_result.extracted_text
 
+        cleaned_markdown = extracted_text # Default to original if cleaning fails
         if extracted_text:
             self.logger.debug("Cleaning Danbolig-specific markdown from Firecrawl output.")
-            cleaned_markdown = self._clean_markdown(extracted_text)
-            result["extractedText"] = cleaned_markdown
+            try:
+                cleaned_markdown = self._clean_markdown(extracted_text)
+            except Exception as clean_err:
+                 self.logger.error(f"Error cleaning Danbolig markdown for {url}: {clean_err}", exc_info=True)
+                 # Keep the original extracted_text if cleaning fails
+                 cleaned_markdown = extracted_text
         else:
             self.logger.warning(f"No extracted text from Firecrawl to process for {url}")
+            cleaned_markdown = "" # Ensure it's an empty string if None initially
 
-        return result
+        # Return a new ParseResult with the cleaned text and original link from Firecrawl
+        return ParseResult(
+            extracted_text=cleaned_markdown,
+            original_link=firecrawl_result.original_link # Preserve original_link if found by Firecrawl (likely None)
+        )
 
     def _clean_markdown(self, markdown: str) -> str:
         """

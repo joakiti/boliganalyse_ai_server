@@ -12,7 +12,8 @@ except ImportError:
     ScrapeResult = None # Define as None if import fails
 
 from src.app.core.config import settings
-from .base_provider import BaseProvider, HtmlParseResult
+from .base_provider import BaseProvider
+from src.app.schemas.parser import ParseResult # Import the new schema
 
 # Use standard Python logging
 logger = logging.getLogger(__name__) # Renamed logger instance
@@ -51,7 +52,7 @@ class FirecrawlProvider(BaseProvider):
         # Check if library is installed and client was initialized successfully
         return self.firecrawl is not None
 
-    async def parse_html(self, url: str, html_content: Optional[str] = None) -> HtmlParseResult:
+    async def parse_html(self, url: str, html_content: Optional[str] = None) -> ParseResult:
         """
         Extract property data using Firecrawl service.
         Note: html_content is ignored as Firecrawl fetches fresh content.
@@ -111,16 +112,16 @@ class FirecrawlProvider(BaseProvider):
 
             self.logger.info(f"Extracted image URL via Firecrawl: {image_url or 'No image found'}")
 
-            return {
-                "extractedText": extracted_text,
-                "property_image_url": image_url,
-                # Firecrawl doesn't provide an 'originalLink' directly
-            }
+            return ParseResult(
+                extracted_text=extracted_text
+                # original_link is None as Firecrawl doesn't provide it
+                # property_image_url is not part of ParseResult schema
+            )
 
         except Exception as e:
             self.logger.error(f"Error scraping URL {url} with Firecrawl: {e}", exc_info=True)
-            # Match TS error structure: put error in extractedText, no 'error' key
-            return {
-                "extractedText": f"Failed to scrape content from {url} using Firecrawl: {e}",
-                "property_image_url": None,
-            }
+            # Return ParseResult with error message in extracted_text
+            return ParseResult(
+                extracted_text=f"Failed to scrape content from {url} using Firecrawl: {e}",
+                original_link=None
+            )
