@@ -42,15 +42,6 @@ class ListingRepository:
             raise
 
     async def find_by_normalized_url(self, normalized_url: str) -> Optional[Listing]:
-        """
-        Find a listing by its normalized URL.
-
-        Args:
-            normalized_url: The normalized URL to search for
-
-        Returns:
-            Listing entity if found, None otherwise
-        """
         await self.initialize()
         try:
             response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
@@ -181,15 +172,7 @@ class ListingRepository:
     async def create_or_get_listing(self, url: str, normalized_url: str) -> Listing:
         """
         Find a listing by normalized URL or create a new one.
-        
-        Args:
-            url: Original URL
-            normalized_url: Normalized URL
-            
-        Returns:
-            Existing or newly created Listing
         """
-        # First try to find existing listing
         existing_listing = await self.find_by_normalized_url(normalized_url)
         if existing_listing:
             return existing_listing
