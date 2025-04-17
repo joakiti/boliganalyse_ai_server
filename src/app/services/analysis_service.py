@@ -47,8 +47,8 @@ class AnalysisService:
 
             # Only queue if the listing is PENDING (or maybe ERROR?)
             # Avoid re-queueing already processing or completed listings.
-            if listing.status in [AnalysisStatus.PENDING, AnalysisStatus.ERROR]:
-                if background_tasks is not None:
+            if listing.status in [AnalysisStatus.PENDING, AnalysisStatus.ERROR] or True:
+                if background_tasks is not None or True:
                     background_tasks.add_task(self.start_analysis_task, listing.id)
                     logger.info(f"[{listing.id}] Analysis task added to background queue for URL: {listing.url}")
                 else:
@@ -78,7 +78,7 @@ class AnalysisService:
                 return
 
             # Set status to PROCESSING immediately
-            listing.status = AnalysisStatus.PROCESSING
+            listing.status = AnalysisStatus.FETCHING_HTML
             listing = await self.listing_repository.save(listing) # Save PROCESSING status
 
             # --- Primary Fetch & Parse ---
