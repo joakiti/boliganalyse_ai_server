@@ -7,6 +7,7 @@ from src.app.lib.url_validation import validate_listing_url
 from src.app.lib.html_utils import fetch_html_content
 from src.app.repositories.listing_repository import ListingRepository
 from src.app.schemas.analyze import AnalysisRequest, AnalysisStatus
+from src.app.schemas.database import Listing
 from .ai_analyzer import AIAnalyzerService
 from ..lib.providers.provider_registry import get_provider_registry
 
@@ -32,7 +33,6 @@ class AnalysisService:
             if not validation_result["valid"]:
                 raise ValueError(validation_result["error"])
 
-            # Generate normalized URL using the proper URL normalization utility
             url_str = str(request.url)
             normalized_url = normalize_url(url_str)
             if not normalized_url:
@@ -46,10 +46,10 @@ class AnalysisService:
             
             # If background_tasks is provided, add the analysis task
             if background_tasks is not None:
-                background_tasks.add_task(self.start_analysis_task, UUID(listing["id"]))
+                background_tasks.add_task(self.start_analysis_task, listing.id)
 
             return {
-                "listing_id": listing["id"],
+                "listing_id": listing.id,
                 "status": AnalysisStatus.PENDING,
                 "message": "Analysis request submitted successfully"
             }

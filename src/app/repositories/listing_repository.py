@@ -15,29 +15,17 @@ logger = logging.getLogger(__name__)
 class ListingRepository:
     """Repository for managing apartment listings in the database."""
     
-    # Table and schema names from configuration
     TABLE_NAME = TableName.APARTMENT_LISTINGS.value
     SCHEMA_NAME = DatabaseSchema.PRIVATE.value
 
     def __init__(self, supabase_client: Optional[Client] = None):
-        """Initialize the repository with an optional Supabase client."""
-        self.supabase = supabase_client
+        self.supabase = supabase_client if supabase_client else None
 
     async def initialize(self):
-        """Initialize the Supabase client if not provided in constructor."""
         if self.supabase is None:
             self.supabase = await get_supabase_admin_client()
 
     async def find_by_id(self, listing_id: uuid.UUID) -> Optional[Listing]:
-        """
-        Find a listing by its ID.
-
-        Args:
-            listing_id: The UUID of the listing to find
-
-        Returns:
-            Listing entity if found, None otherwise
-        """
         await self.initialize()
         try:
             response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \

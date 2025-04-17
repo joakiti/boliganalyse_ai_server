@@ -24,7 +24,7 @@ SCHEMA_CONFIG: Final[dict[str, str]] = {
     "apartment_listings": TableName.APARTMENT_LISTINGS,
 }
 
-
+# Maps from private.apartment_listings
 class Listing(BaseModel):
     """
     Entity representing an apartment listing in the database.
