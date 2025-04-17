@@ -83,15 +83,7 @@ class ListingRepository:
             The created Listing with ID and timestamps
         """
         await self.initialize()
-        
-        # Set timestamps if not provided
-        now = datetime.now(timezone.utc).isoformat()
-        if not listing.created_at:
-            listing.created_at = now
-        if not listing.updated_at:
-            listing.updated_at = now
             
-        # Convert to database dictionary
         db_dict = listing.to_db_dict()
         
         try:
@@ -103,6 +95,7 @@ class ListingRepository:
                 return Listing.from_db_dict(response.data[0])
             else:
                 raise Exception("Failed to create listing, no data returned")
+
         except Exception as e:
             logger.error(f"Error creating listing for URL {listing.url}: {e}")
             raise
@@ -119,10 +112,7 @@ class ListingRepository:
         """
         await self.initialize()
         
-        # Always update timestamp
         listing.updated_at = datetime.now(timezone.utc).isoformat()
-        
-        # Convert to database dictionary
         db_dict = listing.to_db_dict()
         
         try:
@@ -138,36 +128,7 @@ class ListingRepository:
         except Exception as e:
             logger.error(f"Error updating listing {listing.id}: {e}")
             raise
-            
-    async def update_fields(self, listing_id: uuid.UUID, **kwargs) -> None:
-        """
-        Update specific fields of a listing.
 
-        Args:
-            listing_id: The UUID of the listing to update
-            **kwargs: Fields to update
-        """
-        await self.initialize()
-        
-        # Ensure we have something to update
-        if not kwargs:
-            return
-            
-        # Convert status enum to value if provided
-        if "status" in kwargs and isinstance(kwargs["status"], AnalysisStatus):
-            kwargs["status"] = kwargs["status"].value
-            
-        # Always update timestamp
-        kwargs["updated_at"] = datetime.now(timezone.utc).isoformat()
-        
-        try:
-            await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
-                .update(kwargs) \
-                .eq("id", str(listing_id)) \
-                .execute()
-        except Exception as e:
-            logger.error(f"Error updating listing fields {listing_id}: {e}")
-            raise
 
     async def create_or_get_listing(self, url: str, normalized_url: str) -> Listing:
         """
