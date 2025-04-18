@@ -2,6 +2,8 @@ import logging
 from typing import Dict, Any, Optional
 
 from firecrawl import FirecrawlApp # Use the correct import name for the python lib
+from pydantic import HttpUrl
+
 from src.app.core.config import settings
 from .base_provider import BaseProvider
 from src.app.schemas.parser import ParseResult # Import the new schema
@@ -34,47 +36,38 @@ class FirecrawlProvider(BaseProvider):
             )
 
         self.logger.info(f"Scraping URL with Firecrawl: {url}")
-        extracted_text = ""
+
         image_url: Optional[str] = None
+        response: Optional[Any] = await self.firecrawl.scrape_url(
+            url,
+            params={'pageOptions': {'formats': ['markdown']}} # Check correct params structure for python lib
+        )
 
-        try:
-            response: Optional[Any] = await self.firecrawl.scrape_url(
-                url,
-                params={'pageOptions': {'formats': ['markdown']}} # Check correct params structure for python lib
-            )
+        if not response or not response.data:
+            raise ValueError("No data received from Firecrawl scrape")
 
-            if not response or not response.data:
-                raise ValueError("No data received from Firecrawl scrape")
+        scrape_data = response.data
 
-            scrape_data = response.data
+        extracted_text = scrape_data.get('markdown', '') # Get markdown content
+        metadata = scrape_data.get('metadata', {})
 
-            extracted_text = scrape_data.get('markdown', '') # Get markdown content
-            metadata = scrape_data.get('metadata', {})
+        if metadata.get('ogImage'):
+            image_url = metadata['ogImage']
+        elif metadata.get('og:image'):
+            image_url = metadata['og:image']
+        elif isinstance(metadata.get('twitter'), dict) and metadata['twitter'].get('image'):
+             image_url = metadata['twitter']['image']
+        elif isinstance(metadata.get('twitter:image'), str):
+             image_url = metadata['twitter:image']
+        else:
+            import re
+            img_match = re.search(r'!\[.*?\]\((https?://[^\)]+)\)', extracted_text)
+            if img_match:
+                image_url = img_match.group(1)
 
-            if metadata.get('ogImage'):
-                image_url = metadata['ogImage']
-            elif metadata.get('og:image'):
-                image_url = metadata['og:image']
-            elif isinstance(metadata.get('twitter'), dict) and metadata['twitter'].get('image'):
-                 image_url = metadata['twitter']['image']
-            elif isinstance(metadata.get('twitter:image'), str):
-                 image_url = metadata['twitter:image']
-            else:
-                import re
-                img_match = re.search(r'!\[.*?\]\((https?://[^\)]+)\)', extracted_text)
-                if img_match:
-                    image_url = img_match.group(1)
+        self.logger.info(f"Extracted image URL via Firecrawl: {image_url or 'No image found'}")
 
-            self.logger.info(f"Extracted image URL via Firecrawl: {image_url or 'No image found'}")
-
-            return ParseResult(
-                original_link=None,  # Firecrawl doesn't provide redirect information
-                extracted_text=extracted_text
-            )
-
-        except Exception as e:
-            self.logger.error(f"Error scraping URL {url} with Firecrawl: {e}", exc_info=True)
-            return ParseResult(
-                original_link=None,
-                extracted_text=f"Failed to scrape content from {url} using Firecrawl: {e}"
-            )
+        return ParseResult(
+            original_link=HttpUrl(url),  # Firecrawl doesn't provide redirect information
+            extracted_text=extracted_text
+        )
