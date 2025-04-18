@@ -61,7 +61,7 @@ class AnalysisService:
     async def start_analysis_task(self, listing_id: UUID) -> None:
         """Fetches, parses, analyzes, and saves listing data."""
         logger.info(f"[{listing_id}] Starting analysis task.")
-        listing: Optional[Listing] = None
+        listing: Listing = None
         try:
             listing = await self.listing_repository.find_by_id(listing_id)
             if not listing:
@@ -146,4 +146,3 @@ class AnalysisService:
         listing.url_redirect = redirect_url if redirect_url else None
         await self.listing_repository.save(listing)
         logger.info(f"[{listing.id}] Analysis task completed successfully.")
-
