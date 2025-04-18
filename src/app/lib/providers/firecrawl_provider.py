@@ -23,18 +23,9 @@ class FirecrawlProvider(BaseProvider):
         return "Firecrawl"
 
     def can_handle(self, url: str, html_content: Optional[str] = None) -> bool:
-        """
-        Check if this provider can handle the given URL.
-        Enabled only if the library is installed and API key is configured.
-        """
-        # Check if library is installed and client was initialized successfully
         return self.firecrawl is not None
 
     async def parse_html(self, url: str, html_content: Optional[str] = None) -> ParseResult:
-        """
-        Extract property data using Firecrawl service.
-        Note: html_content is ignored as Firecrawl fetches fresh content.
-        """
         if not self.firecrawl:
             self.logger.error("Firecrawl client not available or not initialized.")
             return ParseResult(
@@ -55,13 +46,11 @@ class FirecrawlProvider(BaseProvider):
             if not response or not response.data:
                 raise ValueError("No data received from Firecrawl scrape")
 
-            # Access data correctly based on the Python library's ScrapeResult model
-            scrape_data = response.data # Assuming data is the main attribute
+            scrape_data = response.data
 
             extracted_text = scrape_data.get('markdown', '') # Get markdown content
             metadata = scrape_data.get('metadata', {})
 
-            # Extract image URL from metadata (similar logic to TS version)
             if metadata.get('ogImage'):
                 image_url = metadata['ogImage']
             elif metadata.get('og:image'):
@@ -71,7 +60,6 @@ class FirecrawlProvider(BaseProvider):
             elif isinstance(metadata.get('twitter:image'), str):
                  image_url = metadata['twitter:image']
             else:
-                # Fallback: Look for first image in markdown
                 import re
                 img_match = re.search(r'!\[.*?\]\((https?://[^\)]+)\)', extracted_text)
                 if img_match:
