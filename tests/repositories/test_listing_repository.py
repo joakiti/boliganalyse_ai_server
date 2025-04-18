@@ -4,299 +4,348 @@ import pytest_asyncio
 import uuid
 from datetime import datetime, timezone
 import os
-from typing import AsyncGenerator, List, Dict, Any
+from typing import AsyncGenerator, List, Dict, Any, Generator, Optional
 
 # Ensure dotenv is loaded before other imports (if pytest-dotenv is used, this might be redundant but safe)
 # from dotenv import load_dotenv
 # load_dotenv() # pytest-dotenv plugin handles this automatically if installed
 
 # --- Imports of code under test and dependencies ---
-from supabase import Client, create_client # Import Client for type hinting
+from supabase import Client, create_client, AsyncClient
+from postgrest import APIResponse
+# Commented out as CountMethod might not exist in postgrest.utils
+# from postgrest.utils import CountMethod
 from src.app.repositories.listing_repository import ListingRepository
 from src.app.schemas.status import AnalysisStatus
-from src.app.core.db import get_supabase_admin_client # The actual function to get the client
+from src.app.schemas.database import Listing
+from src.app.lib.supabase_client import get_supabase_admin_client
 
 # --- Constants ---
-TEST_SCHEMA = "private" # Make sure this matches your Supabase setup
-TEST_TABLE = "listings" # Make sure this matches your Supabase table name
+TEST_SCHEMA = "private" # Using private schema
+TEST_TABLE = "apartment_listings"
 
 # --- Fixtures ---
 
-@pytest.fixture(scope="session")
-def supabase_client() -> Client:
-    """Provides a session-scoped Supabase admin client instance."""
-    # Assuming get_supabase_admin_client correctly uses env vars loaded by pytest-dotenv
-    client = get_supabase_admin_client()
-    # Simple check to see if client seems configured - replace with a more robust check if needed
-    if not client or not hasattr(client, 'table'):
-         pytest.fail("Supabase client could not be initialized. Check .env file and Supabase URL/Key.", pytrace=False)
-    # No yield needed here as the client object itself manages connections usually
-    return client
+@pytest_asyncio.fixture(scope="session")
+async def db_client() -> AsyncClient:
+    """Provides a session-scoped Supabase async admin client instance."""
+    try:
+        client: AsyncClient = await get_supabase_admin_client()
+
+        # Perform a simple check against the correct schema and table
+        # Remove the count parameter which is causing type errors
+        response = await client.schema(TEST_SCHEMA).table(TEST_TABLE).select("id").limit(0).execute()
+
+        if isinstance(response, APIResponse) and response.data is not None:
+             return client
+        else:
+            # Make error message slightly more specific if connection check fails
+            error_detail = getattr(response, 'error', 'Unknown error')
+            raise Exception(f"Supabase connection check failed for {TEST_SCHEMA}.{TEST_TABLE}: {error_detail}")
+    except Exception as e:
+        pytest.fail(f"Supabase client could not be initialized for tests: {e}. Check .env/credentials.", pytrace=False)
 
 @pytest.fixture(scope="function")
-def listing_repo(supabase_client: Client) -> ListingRepository:
+def listing_repo(db_client: AsyncClient) -> ListingRepository:
     """
-    Provides a ListingRepository instance for each test function.
-    It implicitly uses the same client logic as the application.
+    Provides a ListingRepository instance initialized with a client for each test function.
     """
-    # The repository likely calls get_supabase_admin_client() internally.
-    # We pass the client here mainly for consistency or if we wanted
-    # to potentially inject a test-specific client in the future,
-    # but the repo itself should fetch its own client via the getter.
-    # If ListingRepository takes client in __init__, use:
-    # return ListingRepository(db_client=supabase_client)
-    # Otherwise, if it uses the getter internally:
-    return ListingRepository() # Assuming it calls get_supabase_admin_client()
+    # Pass the async-obtained client. The repo's constructor expects AsyncClient | None
+    return ListingRepository(supabase_client=db_client)
 
 @pytest.fixture(scope="function", autouse=True)
-def cleanup_listings(supabase_client: Client) -> Generator[List[uuid.UUID], None, None]:
+async def cleanup_listings(db_client: AsyncClient) -> AsyncGenerator[List[uuid.UUID], None]:
     """
-    Auto-used fixture to clean up listings created during a test function.
+    Auto-used async fixture to clean up listings created during a test function.
     Yields a list to which test functions can append the IDs of created listings.
+    Now async and targets the correct schema.
     """
     created_listing_ids: List[uuid.UUID] = []
-    yield created_listing_ids # Hand control to the test, passing the list
+    yield created_listing_ids # Hand control to the test
 
     # --- Teardown ---
     if not created_listing_ids:
-        return # Nothing to clean up
+        return
 
-    print(f"\nCleaning up {len(created_listing_ids)} test listings...")
+    print(f"\nCleaning up {len(created_listing_ids)} test listings from schema '{TEST_SCHEMA}'...")
     try:
-        # Use the direct client for cleanup
-        delete_op = supabase_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
+        # Use await and specify the correct schema for cleanup
+        delete_op: APIResponse = await db_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
             .delete()\
             .in_("id", [str(uid) for uid in created_listing_ids])\
             .execute()
 
-        if hasattr(delete_op, 'error') and delete_op.error:
+        # Response handling might vary slightly with async client, adjust if needed
+        if hasattr(delete_op, 'data') and delete_op.data is not None:
+            # Supabase delete often returns the deleted records
+            print(f"Cleaned up {len(delete_op.data)} listings.")
+        elif hasattr(delete_op, 'error') and delete_op.error:
              print(f"Warning: Error during cleanup: {delete_op.error}")
-        elif hasattr(delete_op, 'data') and delete_op.data:
-             print(f"Cleaned up {len(delete_op.data)} listings.")
         else:
-             # Handle cases where the response structure might differ or be empty on success
-             print(f"Cleanup operation executed for IDs: {created_listing_ids}. Response structure might vary.")
+             print(f"Cleanup operation executed for IDs: {created_listing_ids}. Check response manually if needed.")
 
     except Exception as e:
         print(f"ERROR during listing cleanup: {e}")
-        # Optionally re-raise or handle more gracefully depending on test requirements
-        # raise # Uncomment to make cleanup failures fail the test session
-
+        # Consider failing the test if cleanup fails critically
+        # pytest.fail(f"Listing cleanup failed: {e}")
 
 # --- Helper Function ---
 def generate_unique_url(base="https://test.example.com/listing/") -> str:
     return f"{base}{uuid.uuid4()}"
 
+def normalize_test_url(url: str) -> str:
+    # Simple normalization for tests, align with your actual logic if different
+    return url.replace("https://", "").replace("http://", "").rstrip('/')
+
 # --- Test Cases ---
 
-# Removed asyncio marker
-def test_create_listing(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
-    """Test creating a new listing successfully."""
+@pytest.mark.asyncio
+async def test_create_or_get_listing_creation(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    """Test create_or_get_listing when the listing does not exist (creation path)."""
     test_url = generate_unique_url()
-    # Assuming your normalize_url logic is tested elsewhere or simple
-    normalized_url = test_url.replace("https://", "").replace("http://", "")
+    normalized_url = normalize_test_url(test_url)
 
-    created_listing = listing_repo.create_listing(test_url, normalized_url)
+    # Call the method under test
+    created_listing = await listing_repo.create_or_get_listing(test_url, normalized_url)
 
     assert created_listing is not None
-    assert "id" in created_listing
-    assert isinstance(uuid.UUID(created_listing["id"]), uuid.UUID) # Check if valid UUID
-    assert created_listing["url"] == test_url
-    assert created_listing["normalized_url"] == normalized_url
-    assert created_listing["status"] == AnalysisStatus.PENDING.value
-    assert created_listing["analysis_result"] is None
-    assert created_listing["error_message"] is None
-    assert created_listing["metadata"] is None
-    assert "created_at" in created_listing
-    assert "updated_at" in created_listing
-    assert created_listing["created_at"] is not None
-    assert created_listing["updated_at"] is not None
+    assert isinstance(created_listing, Listing)
+    assert created_listing.id is not None
+    assert isinstance(created_listing.id, uuid.UUID)
+    assert created_listing.url == test_url
+    assert created_listing.normalized_url == normalized_url
+    assert created_listing.status == AnalysisStatus.PENDING
+    assert created_listing.analysis_result is None
+    assert created_listing.error_message is None
+    # Removed metadata assertion
+    assert created_listing.created_at is not None
+    assert created_listing.updated_at is not None
+    assert isinstance(created_listing.created_at, datetime)
+    assert isinstance(created_listing.updated_at, datetime)
 
     # Add ID to cleanup list
-    cleanup_listings.append(uuid.UUID(created_listing["id"]))
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
 
-    # Optional: Direct verification (requires supabase_client fixture)
-    # verify_client = get_supabase_admin_client() # Or use the fixture
-    # result = verify_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
-    #     .select("*").eq("id", created_listing["id"]).maybe_single().execute()
-    # assert result.data is not None
-    # assert result.data["url"] == test_url
+@pytest.mark.asyncio
+async def test_create_or_get_listing_existing(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    """Test create_or_get_listing when the listing already exists (get path)."""
+    test_url = generate_unique_url()
+    normalized_url = normalize_test_url(test_url)
 
+    # 1. Create the listing first directly using create()
+    initial_listing = Listing(url=test_url, normalized_url=normalized_url, status=AnalysisStatus.PENDING)
+    created_listing = await listing_repo.create(initial_listing)
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
 
-# Removed asyncio marker
-def test_find_by_normalized_url_found(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    # 2. Call create_or_get_listing with the same normalized_url
+    retrieved_listing = await listing_repo.create_or_get_listing(test_url, normalized_url)
+
+    assert retrieved_listing is not None
+    assert isinstance(retrieved_listing, Listing)
+    assert retrieved_listing.id == created_listing.id # Should be the same listing
+    assert retrieved_listing.url == test_url
+    assert retrieved_listing.normalized_url == normalized_url
+
+@pytest.mark.asyncio
+async def test_find_by_normalized_url_found(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
     """Test finding a listing by normalized URL when it exists."""
     test_url = generate_unique_url()
-    normalized_url = test_url.replace("https://", "").replace("http://", "")
+    normalized_url = normalize_test_url(test_url)
 
     # 1. Create the listing first
-    created_listing = listing_repo.create_listing(test_url, normalized_url)
-    assert created_listing is not None
-    created_id = uuid.UUID(created_listing["id"])
-    cleanup_listings.append(created_id) # Ensure cleanup
+    initial_listing = Listing(url=test_url, normalized_url=normalized_url, status=AnalysisStatus.PENDING)
+    created_listing = await listing_repo.create(initial_listing)
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
 
     # 2. Try to find it
-    found_listing = listing_repo.find_by_normalized_url(normalized_url)
+    found_listing = await listing_repo.find_by_normalized_url(normalized_url)
 
     assert found_listing is not None
-    assert uuid.UUID(found_listing["id"]) == created_id
-    assert found_listing["url"] == test_url
-    assert found_listing["normalized_url"] == normalized_url
+    assert isinstance(found_listing, Listing)
+    assert found_listing.id == created_listing.id
+    assert found_listing.url == test_url
+    assert found_listing.normalized_url == normalized_url
 
-
-# Removed asyncio marker
-def test_find_by_normalized_url_not_found(listing_repo: ListingRepository):
+@pytest.mark.asyncio
+async def test_find_by_normalized_url_not_found(listing_repo: ListingRepository):
     """Test finding a listing by normalized URL when it does not exist."""
     non_existent_normalized_url = f"nonexistent.example.com/listing/{uuid.uuid4()}"
 
-    found_listing = listing_repo.find_by_normalized_url(non_existent_normalized_url)
+    found_listing = await listing_repo.find_by_normalized_url(non_existent_normalized_url)
 
     assert found_listing is None
 
+@pytest.mark.asyncio
+async def test_find_by_id_found(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    """Test finding a listing by ID when it exists."""
+    test_url = generate_unique_url()
+    normalized_url = normalize_test_url(test_url)
+    initial_listing = Listing(url=test_url, normalized_url=normalized_url, status=AnalysisStatus.PENDING)
+    created_listing = await listing_repo.create(initial_listing)
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
 
-# Removed asyncio marker
-def test_update_status(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID], supabase_client: Client):
+    # Try to find it by ID
+    found_listing = await listing_repo.find_by_id(created_listing.id)
+
+    assert found_listing is not None
+    assert isinstance(found_listing, Listing)
+    assert found_listing.id == created_listing.id
+    assert found_listing.url == test_url
+
+@pytest.mark.asyncio
+async def test_find_by_id_not_found(listing_repo: ListingRepository):
+    """Test finding a listing by ID when it does not exist."""
+    non_existent_id = uuid.uuid4() # Generate a random UUID unlikely to exist
+
+    found_listing = await listing_repo.find_by_id(non_existent_id)
+
+    assert found_listing is None
+
+@pytest.mark.asyncio
+async def test_update_status(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
     """Test updating the status of a listing."""
     test_url = generate_unique_url()
-    normalized_url = test_url.replace("https://", "").replace("http://", "")
-    created_listing = listing_repo.create_listing(test_url, normalized_url)
-    created_id = uuid.UUID(created_listing["id"])
-    cleanup_listings.append(created_id)
+    normalized_url = normalize_test_url(test_url)
+    initial_listing = Listing(url=test_url, normalized_url=normalized_url, status=AnalysisStatus.PENDING)
+    created_listing = await listing_repo.create(initial_listing)
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
+    original_updated_at = created_listing.updated_at
+    assert original_updated_at is not None
 
-    new_status = AnalysisStatus.PROCESSING
+    new_status = AnalysisStatus.ERROR # Use existing ERROR status instead of PROCESSING
 
-    listing_repo.update_status(created_id, new_status)
+    # Update the status
+    updated_listing = await listing_repo.update_status(created_listing.id, new_status)
 
-    # Verify directly in DB
-    result = supabase_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
-        .select("status, updated_at").eq("id", str(created_id)).maybe_single().execute()
+    assert updated_listing is not None
+    assert isinstance(updated_listing, Listing)
+    assert updated_listing.id == created_listing.id
+    assert updated_listing.status == new_status
+    # Check timestamp was updated (allow for small clock differences if needed)
+    assert updated_listing.updated_at is not None
+    assert updated_listing.updated_at > original_updated_at
 
-    assert result.data is not None
-    assert result.data["status"] == new_status.value
-    # Check if updated_at timestamp has likely changed (hard to be exact)
-    original_updated_at = datetime.fromisoformat(created_listing["updated_at"])
-    current_updated_at = datetime.fromisoformat(result.data["updated_at"])
-    assert current_updated_at > original_updated_at
+    # Verify by fetching again (optional but good practice)
+    fetched_listing = await listing_repo.find_by_id(created_listing.id)
+    assert fetched_listing is not None
+    assert fetched_listing.status == new_status
 
-
-# Removed asyncio marker
-def test_set_error_status(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID], supabase_client: Client):
-    """Test setting an error status and message."""
+@pytest.mark.asyncio
+async def test_update_listing_full(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    """Test updating multiple fields of a listing using the update method."""
     test_url = generate_unique_url()
-    normalized_url = test_url.replace("https://", "").replace("http://", "")
-    created_listing = listing_repo.create_listing(test_url, normalized_url)
-    created_id = uuid.UUID(created_listing["id"])
-    cleanup_listings.append(created_id)
+    normalized_url = normalize_test_url(test_url)
+    initial_listing = Listing(url=test_url, normalized_url=normalized_url, status=AnalysisStatus.PENDING)
+    created_listing = await listing_repo.create(initial_listing)
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
+    original_created_at = created_listing.created_at
+    original_updated_at = created_listing.updated_at
+    assert original_updated_at is not None
 
-    error_status = AnalysisStatus.SCRAPING_FAILED
-    error_instance = ValueError("Something went wrong during scraping")
-    expected_error_message = f"{type(error_instance).__name__}: {error_instance}"
+    # Get the listing to modify
+    listing_to_update = await listing_repo.find_by_id(created_listing.id)
+    assert listing_to_update is not None
+    
+    # Modify the listing and update it
+    listing_to_update.status = AnalysisStatus.COMPLETED
+    listing_to_update.analysis_result = {"score": 0.85, "summary": "Looks good"}
+    listing_to_update.error_message = None
+    listing_to_update.url_redirect = "https://new.example.com/listing/123"
 
-    listing_repo.set_error_status(created_id, error_status, error_instance)
+    # Call update method with the listing object
+    updated_listing = await listing_repo.update(listing_to_update)
 
-    # Verify directly in DB
-    result = supabase_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
-        .select("status, error_message, updated_at").eq("id", str(created_id)).maybe_single().execute()
+    assert updated_listing is not None
+    assert isinstance(updated_listing, Listing)
+    assert updated_listing.id == created_listing.id
+    assert updated_listing.status == AnalysisStatus.COMPLETED
+    assert updated_listing.analysis_result == {"score": 0.85, "summary": "Looks good"}
+    assert updated_listing.error_message is None
+    assert updated_listing.url_redirect == "https://new.example.com/listing/123"
+    # Removed metadata assertion
+    assert updated_listing.created_at == original_created_at # Created timestamp should not change
+    assert updated_listing.updated_at is not None # Assert datetime not None
+    assert updated_listing.updated_at > original_updated_at # Updated timestamp should change
 
-    assert result.data is not None
-    assert result.data["status"] == error_status.value
-    assert result.data["error_message"] == expected_error_message
-    original_updated_at = datetime.fromisoformat(created_listing["updated_at"])
-    current_updated_at = datetime.fromisoformat(result.data["updated_at"])
-    assert current_updated_at > original_updated_at
+    # Verify by fetching again
+    fetched_listing = await listing_repo.find_by_id(created_listing.id)
+    assert fetched_listing is not None
+    assert fetched_listing.status == AnalysisStatus.COMPLETED
+    # Removed metadata assertion
 
-
-# Removed asyncio marker
-def test_save_analysis_result(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID], supabase_client: Client):
-    """Test saving analysis results."""
+@pytest.mark.asyncio
+async def test_save_new(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    """Test saving a new listing using the save method."""
     test_url = generate_unique_url()
-    normalized_url = test_url.replace("https://", "").replace("http://", "")
-    created_listing = listing_repo.create_listing(test_url, normalized_url)
-    created_id = uuid.UUID(created_listing["id"])
-    cleanup_listings.append(created_id)
+    normalized_url = normalize_test_url(test_url)
+    new_listing = Listing(
+        url=test_url,
+        normalized_url=normalized_url,
+        status=AnalysisStatus.PENDING
+        # Removed metadata
+    )
+    assert new_listing.id is None # Ensure it's new
 
-    # Set an error first to ensure save_analysis clears it
-    listing_repo.set_error_status(created_id, AnalysisStatus.ANALYSIS_FAILED, ValueError("Previous error"))
+    saved_listing = await listing_repo.save(new_listing)
 
-    analysis_data = {"price": 5000000, "size_m2": 75, "rooms": 3}
+    assert saved_listing is not None
+    assert saved_listing.id is not None # Should have an ID now
+    assert isinstance(saved_listing.id, uuid.UUID)
+    assert saved_listing.url == test_url
+    assert saved_listing.normalized_url == normalized_url
+    assert saved_listing.status == AnalysisStatus.PENDING
+    # Removed metadata assertion
+    assert saved_listing.created_at is not None
+    assert saved_listing.updated_at is not None
 
-    listing_repo.save_analysis_result(created_id, analysis_data)
+    assert saved_listing.id is not None
+    cleanup_listings.append(saved_listing.id)
 
-    # Verify directly in DB
-    result = supabase_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
-        .select("status, error_message, analysis_result, updated_at").eq("id", str(created_id)).maybe_single().execute()
-
-    assert result.data is not None
-    assert result.data["status"] == AnalysisStatus.COMPLETED.value
-    assert result.data["error_message"] is None # Error should be cleared
-    assert result.data["analysis_result"] == analysis_data
-    original_updated_at = datetime.fromisoformat(created_listing["updated_at"]) # This might be inaccurate if set_error_status updated it
-    current_updated_at = datetime.fromisoformat(result.data["updated_at"])
-    # We can only assert it's a valid timestamp, comparing might be tricky
-    assert isinstance(current_updated_at, datetime)
-
-
-# Removed asyncio marker
-def test_update_listing_metadata(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID], supabase_client: Client):
-    """Test updating listing metadata."""
+@pytest.mark.asyncio
+async def test_save_existing(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID]):
+    """Test saving an existing listing using the save method (should perform an update)."""
     test_url = generate_unique_url()
-    normalized_url = test_url.replace("https://", "").replace("http://", "")
-    created_listing = listing_repo.create_listing(test_url, normalized_url)
-    created_id = uuid.UUID(created_listing["id"])
-    cleanup_listings.append(created_id)
+    normalized_url = normalize_test_url(test_url)
 
-    metadata = {"source": "TestSource", "scraped_at": datetime.now(timezone.utc).isoformat(), "version": 1}
+    # 1. Create initial listing
+    initial_listing = Listing(url=test_url, normalized_url=normalized_url, status=AnalysisStatus.PENDING)
+    created_listing = await listing_repo.create(initial_listing)
+    assert created_listing.id is not None
+    cleanup_listings.append(created_listing.id)
+    original_updated_at = created_listing.updated_at
+    assert original_updated_at is not None
 
-    listing_repo.update_listing_metadata(created_id, metadata)
+    # 2. Modify the listing object
+    created_listing.status = AnalysisStatus.ERROR # Use ERROR instead of PROCESSING
+    # Removed metadata update
 
-    # Verify directly in DB
-    result = supabase_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
-        .select("metadata, updated_at").eq("id", str(created_id)).maybe_single().execute()
+    # 3. Save the modified listing object
+    saved_listing = await listing_repo.save(created_listing)
 
-    assert result.data is not None
-    assert result.data["metadata"] == metadata
-    original_updated_at = datetime.fromisoformat(created_listing["updated_at"])
-    current_updated_at = datetime.fromisoformat(result.data["updated_at"])
-    assert current_updated_at > original_updated_at
+    assert saved_listing is not None
+    assert saved_listing.id == created_listing.id # ID should remain the same
+    assert saved_listing.status == AnalysisStatus.ERROR
+    # Removed metadata assertion
+    assert saved_listing.updated_at is not None # Assert datetime not None
+    assert saved_listing.updated_at > original_updated_at # Timestamp should update
 
-# --- Optional: Test Database Constraints (Example) ---
+    # 4. Verify by fetching again
+    fetched_listing = await listing_repo.find_by_id(created_listing.id)
+    assert fetched_listing is not None
+    assert fetched_listing.status == AnalysisStatus.ERROR
+    # Removed metadata assertion
 
-# # Removed asyncio marker
-# def test_create_listing_duplicate_normalized_url_fails(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID], supabase_client: Client):
-#     """
-#     Test that creating a listing with a duplicate normalized_url fails
-#     if there's a UNIQUE constraint on the 'normalized_url' column in the database.
-#     NOTE: This test assumes such a constraint exists. It might fail otherwise.
-#     """
-#     test_url = generate_unique_url()
-#     normalized_url = test_url.replace("https://", "").replace("http://", "")
+# Potential test for unique constraint (requires constraint in DB)
+# @pytest.mark.asyncio
+# async def test_create_listing_duplicate_normalized_url_fails(listing_repo: ListingRepository, cleanup_listings: List[uuid.UUID], db_client: Client):
+#     """ ... (similar structure, use await, check for specific DB error) ... """
+#     pass # Implementation requires knowing the exact exception
 
-#     # 1. Create the first listing
-#     created_listing = listing_repo.create_listing(test_url, normalized_url)
-#     assert created_listing is not None
-#     created_id = uuid.UUID(created_listing["id"])
-#     cleanup_listings.append(created_id) # Ensure cleanup
-
-#     # 2. Attempt to create another listing with the *same* normalized_url
-#     another_test_url = generate_unique_url("https://another.domain/") # Different URL, same normalized path part if logic is simple
-#     # Or just use the exact same URL if normalization is robust:
-#     # another_test_url = test_url
-
-#     # We expect a database error (e.g., Supabase specific error or a generic DB error)
-#     # The exact exception type might depend on the db driver and Supabase client behavior.
-#     # You might need to inspect the actual error raised during a manual test run.
-#     # Let's assume it might raise a generic Exception for now, or potentially
-#     # something like `postgrest.exceptions.APIError` if using raw postgrest.
-#     # The Supabase client might wrap this.
-#     with pytest.raises(Exception) as excinfo: # Replace Exception with a more specific error if known
-#         listing_repo.create_listing(another_test_url, normalized_url)
-
-#     # Check if the error message indicates a unique constraint violation
-#     # This message is specific to PostgreSQL and might change.
-#     assert "duplicate key value violates unique constraint" in str(excinfo.value).lower()
-#     # Or check for a specific error code if available from the exception object
-
-#     # Verify only one listing exists
-#     result = supabase_client.schema(TEST_SCHEMA).table(TEST_TABLE)\
-#         .select("id", count='exact').eq("normalized_url", normalized_url).execute()
-#     assert result.count == 1
+# Note: The db_client fixture setup might need refinement based on how async
+# initialization and potential test isolation (e.g., transactions) are handled.

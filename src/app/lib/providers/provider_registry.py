@@ -75,6 +75,7 @@ class ProviderRegistry:
 
         Raises:
             ValueError: If no suitable provider is found.
+            :rtype: object
         """
         logger.debug(f"Attempting to find provider for URL: {url}")
         for provider in self.providers:

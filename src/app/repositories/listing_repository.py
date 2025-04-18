@@ -1,10 +1,10 @@
 import uuid
 import logging
+import json
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List, cast
+from typing import Optional, Dict, Any, List, cast, TypeVar, Union
 from postgrest import APIResponse
-
-from supabase import Client, create_client  # Import Client for type hinting
+from supabase import AsyncClient
 
 from src.app.lib.supabase_client import get_supabase_admin_client
 from src.app.schemas.status import AnalysisStatus
@@ -19,7 +19,7 @@ class ListingRepository:
     TABLE_NAME = TableName.APARTMENT_LISTINGS.value
     SCHEMA_NAME = DatabaseSchema.PRIVATE.value
 
-    def __init__(self, supabase_client: Optional[Client] = None):
+    def __init__(self, supabase_client: Optional[AsyncClient] = None):
         self.supabase = supabase_client if supabase_client else None
 
     async def initialize(self):
@@ -30,15 +30,21 @@ class ListingRepository:
 
     async def find_by_id(self, listing_id: uuid.UUID) -> Optional[Listing]:
         await self.initialize()
-        try:
-            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
-                .select("*")
-                .eq("id", str(listing_id))
-                .limit(1)
-                .execute())
+        if not self.supabase:
+            raise RuntimeError("Supabase client not initialized")
 
-            if response.data:
-                return Listing.from_db_dict(response.data[0])
+        try:
+            # Use APIResponse[Any] instead of specifying exact response structure
+            response: APIResponse[Any] = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .select("*") \
+                .eq("id", str(listing_id)) \
+                .limit(1) \
+                .execute()
+
+            if response.data and len(response.data) > 0:
+                # Type check the data at runtime
+                if isinstance(response.data, list) and len(response.data) > 0:
+                    return Listing.from_db_dict(response.data[0])
             return None
         except Exception as e:
             logger.error(f"Error finding listing by ID {listing_id}: {e}")
@@ -46,15 +52,20 @@ class ListingRepository:
 
     async def find_by_normalized_url(self, normalized_url: str) -> Optional[Listing]:
         await self.initialize()
-        try:
-            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
-                .select("*")
-                .eq("normalized_url", normalized_url)
-                .limit(1)
-                .execute())
+        if not self.supabase:
+            raise RuntimeError("Supabase client not initialized")
 
-            if response.data:
-                return Listing.from_db_dict(response.data[0])
+        try:
+            # Use APIResponse[Any] for flexibility
+            response: APIResponse[Any] = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .select("*") \
+                .eq("normalized_url", normalized_url) \
+                .limit(1) \
+                .execute()
+
+            if response.data and len(response.data) > 0:
+                if isinstance(response.data, list) and len(response.data) > 0:
+                    return Listing.from_db_dict(response.data[0])
             return None
         except Exception as e:
             logger.error(f"Error finding listing by normalized URL {normalized_url}: {e}")
@@ -86,18 +97,21 @@ class ListingRepository:
             The created Listing with ID and timestamps
         """
         await self.initialize()
+        if not self.supabase:
+            raise RuntimeError("Supabase client not initialized")
 
         db_dict = listing.to_db_dict()
 
         try:
-            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
-                .insert(db_dict)
-                .execute())
+            # Use APIResponse[Any] for flexibility
+            response: APIResponse[Any] = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .insert(db_dict) \
+                .execute()
 
-            if response.data:
-                return Listing.from_db_dict(response.data[0])
-            else:
-                raise Exception("Failed to create listing, no data returned")
+            if response.data and len(response.data) > 0:
+                if isinstance(response.data, list) and len(response.data) > 0:
+                    return Listing.from_db_dict(response.data[0])
+            raise Exception("Failed to create listing, no data returned")
 
         except Exception as e:
             logger.error(f"Error creating listing for URL {listing.url}: {e}")
@@ -114,20 +128,23 @@ class ListingRepository:
             The updated Listing
         """
         await self.initialize()
+        if not self.supabase:
+            raise RuntimeError("Supabase client not initialized")
 
         listing.updated_at = datetime.now(timezone.utc)
         db_dict = listing.to_db_dict()
 
         try:
-            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
-                .update(db_dict)
-                .eq("id", str(listing.id))
-                .execute())
+            # Use APIResponse[Any] for flexibility
+            response: APIResponse[Any] = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .update(db_dict) \
+                .eq("id", str(listing.id)) \
+                .execute()
 
-            if response.data:
-                return Listing.from_db_dict(response.data[0])
-            else:
-                raise Exception(f"Failed to update listing {listing.id}, no data returned")
+            if response.data and len(response.data) > 0:
+                if isinstance(response.data, list) and len(response.data) > 0:
+                    return Listing.from_db_dict(response.data[0])
+            raise Exception(f"Failed to update listing {listing.id}, no data returned")
         except Exception as e:
             logger.error(f"Error updating listing {listing.id}: {e}")
             raise
@@ -144,6 +161,8 @@ class ListingRepository:
             The updated Listing object.
         """
         await self.initialize()
+        if not self.supabase:
+            raise RuntimeError("Supabase client not initialized")
 
         update_payload = {
             'status': status.value,
@@ -151,22 +170,18 @@ class ListingRepository:
         }
 
         try:
-            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
-                .update(update_payload)
-                .eq("id", str(listing_id))
-                .execute())
+            # Use APIResponse[Any] for flexibility
+            response: APIResponse[Any] = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
+                .update(update_payload) \
+                .eq("id", str(listing_id)) \
+                .execute()
 
-            if response.data:
-                # Successfully updated, return the updated listing object
-                return Listing.from_db_dict(response.data[0])
-            else:
-                # If Supabase update doesn't return data, raise an error directly.
-                # This indicates an issue with the update operation or Supabase itself.
-                raise Exception(f"Failed to update status for listing {listing_id} to {status.value}. Supabase returned no data.")
+            if response.data and len(response.data) > 0:
+                if isinstance(response.data, list) and len(response.data) > 0:
+                    return Listing.from_db_dict(response.data[0])
+            raise Exception(f"Failed to update status for listing {listing_id} to {status.value}. Supabase returned no data.")
         except Exception as e:
-            # Log the specific error from Supabase or other issues
             logger.error(f"Error updating status for listing {listing_id} to {status.value}: {e}")
-            # Re-raise the exception to be handled by the caller
             raise
 
     async def create_or_get_listing(self, url: str, normalized_url: str) -> Listing:
@@ -177,7 +192,6 @@ class ListingRepository:
         if existing_listing:
             return existing_listing
 
-        # Create a new listing
         new_listing = Listing(
             url=url,
             normalized_url=normalized_url,
