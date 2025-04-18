@@ -38,7 +38,7 @@ class FirecrawlProvider(BaseProvider):
         self.logger.info(f"Scraping URL with Firecrawl: {url}")
 
         image_url: Optional[str] = None
-        response: Optional[Any] = await self.firecrawl.scrape_url(
+        response: Optional[Any] = self.firecrawl.scrape_url(
             url,
             params={'pageOptions': {'formats': ['markdown']}} # Check correct params structure for python lib
         )
