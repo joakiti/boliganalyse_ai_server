@@ -59,7 +59,7 @@ class Listing(BaseModel):
         Returns:
             Dictionary with database field names and values
         """
-        db_dict = self.dict(exclude_unset=True, exclude_none=True)
+        db_dict = self.model_dump(exclude_unset=True, exclude_none=True, mode='json')
         
         # Convert enum to string
         if "status" in db_dict and isinstance(db_dict["status"], AnalysisStatus):
