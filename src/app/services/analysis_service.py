@@ -88,7 +88,7 @@ class AnalysisService:
             redirect_html: Optional[str] = None
 
             if redirect_url and redirect_url != listing.url:
-                listing.source_url = redirect_url  # Store the string representation
+                listing.url_redirect = redirect_url
                 try:
 
                     logger.info(f"[{listing_id}] Processing source URL: {redirect_url}")
@@ -113,13 +113,13 @@ class AnalysisService:
                 secondary_text=redirect_parsed_text
             )
 
-            await self.save_succesful_listing(analysis_result,
-                                         listing,
-                                         primary_html,
-                                         primary_text,
-                                         redirect_html,
-                                         redirect_parsed_text,
-                                         redirect_url)
+            await self.save_successful_listing(analysis_result,
+                                               listing,
+                                               primary_html,
+                                               primary_text,
+                                               redirect_html,
+                                               redirect_parsed_text,
+                                               redirect_url)
 
 
         except Exception as e:
@@ -135,8 +135,8 @@ class AnalysisService:
                         f"[{listing_id}] CRITICAL: Failed to save ERROR status after analysis failure: {save_err}",
                         exc_info=True)
 
-    async def save_succesful_listing(self, analysis_result, listing, primary_html, primary_text, redirect_html,
-                                     redirect_parsed_text, redirect_url):
+    async def save_successful_listing(self, analysis_result, listing, primary_html, primary_text, redirect_html,
+                                      redirect_parsed_text, redirect_url):
         listing.status = AnalysisStatus.COMPLETED
         listing.analysis_result = analysis_result
         listing.html_url = primary_html
