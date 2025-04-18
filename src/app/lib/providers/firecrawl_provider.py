@@ -59,7 +59,10 @@ class FirecrawlProvider(BaseProvider):
         """
         if not self.firecrawl:
             self.logger.error("Firecrawl client not available or not initialized.")
-            return {"error": "Firecrawl service not configured"}
+            return ParseResult(
+                original_link=None,
+                extracted_text="Firecrawl service not configured"
+            )
 
         self.logger.info(f"Scraping URL with Firecrawl: {url}")
         extracted_text = ""
@@ -83,7 +86,6 @@ class FirecrawlProvider(BaseProvider):
                 url,
                 params={'pageOptions': {'formats': ['markdown']}} # Check correct params structure for python lib
             )
-
 
             if not response or not response.data:
                 raise ValueError("No data received from Firecrawl scrape")
@@ -113,15 +115,13 @@ class FirecrawlProvider(BaseProvider):
             self.logger.info(f"Extracted image URL via Firecrawl: {image_url or 'No image found'}")
 
             return ParseResult(
+                original_link=None,  # Firecrawl doesn't provide redirect information
                 extracted_text=extracted_text
-                # original_link is None as Firecrawl doesn't provide it
-                # property_image_url is not part of ParseResult schema
             )
 
         except Exception as e:
             self.logger.error(f"Error scraping URL {url} with Firecrawl: {e}", exc_info=True)
-            # Return ParseResult with error message in extracted_text
             return ParseResult(
-                extracted_text=f"Failed to scrape content from {url} using Firecrawl: {e}",
-                original_link=None
+                original_link=None,
+                extracted_text=f"Failed to scrape content from {url} using Firecrawl: {e}"
             )

@@ -1,9 +1,10 @@
 import uuid
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, cast
+from postgrest import APIResponse
 
-from supabase import Client  # Import Client for type hinting
+from supabase import Client, create_client  # Import Client for type hinting
 
 from src.app.lib.supabase_client import get_supabase_admin_client
 from src.app.schemas.status import AnalysisStatus
@@ -24,15 +25,17 @@ class ListingRepository:
     async def initialize(self):
         if self.supabase is None:
             self.supabase = await get_supabase_admin_client()
+            if self.supabase is None:
+                raise RuntimeError("Failed to initialize Supabase client")
 
     async def find_by_id(self, listing_id: uuid.UUID) -> Optional[Listing]:
         await self.initialize()
         try:
-            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
-                .select("*") \
-                .eq("id", str(listing_id)) \
-                .limit(1) \
-                .execute()
+            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
+                .select("*")
+                .eq("id", str(listing_id))
+                .limit(1)
+                .execute())
 
             if response.data:
                 return Listing.from_db_dict(response.data[0])
@@ -44,11 +47,11 @@ class ListingRepository:
     async def find_by_normalized_url(self, normalized_url: str) -> Optional[Listing]:
         await self.initialize()
         try:
-            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
-                .select("*") \
-                .eq("normalized_url", normalized_url) \
-                .limit(1) \
-                .execute()
+            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
+                .select("*")
+                .eq("normalized_url", normalized_url)
+                .limit(1)
+                .execute())
 
             if response.data:
                 return Listing.from_db_dict(response.data[0])
@@ -87,9 +90,9 @@ class ListingRepository:
         db_dict = listing.to_db_dict()
 
         try:
-            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
-                .insert(db_dict) \
-                .execute()
+            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
+                .insert(db_dict)
+                .execute())
 
             if response.data:
                 return Listing.from_db_dict(response.data[0])
@@ -112,14 +115,14 @@ class ListingRepository:
         """
         await self.initialize()
 
-        listing.updated_at = datetime.now(timezone.utc).isoformat()
+        listing.updated_at = datetime.now(timezone.utc)
         db_dict = listing.to_db_dict()
 
         try:
-            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
-                .update(db_dict) \
-                .eq("id", str(listing.id)) \
-                .execute()
+            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
+                .update(db_dict)
+                .eq("id", str(listing.id))
+                .execute())
 
             if response.data:
                 return Listing.from_db_dict(response.data[0])
@@ -144,14 +147,14 @@ class ListingRepository:
 
         update_payload = {
             'status': status.value,
-            'updated_at': datetime.now(timezone.utc).isoformat()
+            'updated_at': datetime.now(timezone.utc)
         }
 
         try:
-            response = await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME) \
-                .update(update_payload) \
-                .eq("id", str(listing_id)) \
-                .execute()
+            response = cast(APIResponse, await self.supabase.schema(self.SCHEMA_NAME).table(self.TABLE_NAME)
+                .update(update_payload)
+                .eq("id", str(listing_id))
+                .execute())
 
             if response.data:
                 # Successfully updated, return the updated listing object
@@ -165,7 +168,6 @@ class ListingRepository:
             logger.error(f"Error updating status for listing {listing_id} to {status.value}: {e}")
             # Re-raise the exception to be handled by the caller
             raise
-
 
     async def create_or_get_listing(self, url: str, normalized_url: str) -> Listing:
         """

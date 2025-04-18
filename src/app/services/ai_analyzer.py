@@ -68,11 +68,6 @@ class AIAnalyzerService:
 
     def _create_analysis_prompt(self, text_content: str) -> str:
         """Creates the detailed prompt for Claude API, adapted from TypeScript version."""
-        # Ensure the JSON structure example matches the Pydantic models in schemas/analyze.py
-        # Note: Removed explicit JSON block ```json ... ``` around the example structure
-        # as Claude generally prefers the structure directly described.
-        # Note: Removed the explicit {{{{ and }}}} as they might confuse the f-string formatting or Claude.
-        # Using standard { and } for the JSON example.
         return f"""
 Du er ekspert i boliganalyser på det danske marked, og bruger idag din erfaring til at hjælpe fremtidige boligejere med at identificere skjulte risici og værdifulde fordele.
 

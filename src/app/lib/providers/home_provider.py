@@ -25,7 +25,7 @@ class HomeProvider(BaseProvider):
         except Exception:
             return False
 
-    async def extract_image_url(self, html_content: str) -> Optional[HttpUrl]:
+    async def extract_image_url(self, html_content: str) -> Optional[str]:
         """
         Extracts the main property image URL, prioritizing meta tags and specific Home.dk selectors.
         Falls back to generic image extraction if no specific images are found.
@@ -39,34 +39,32 @@ class HomeProvider(BaseProvider):
 
             # 1. Check meta tags (og:image) - Most reliable
             og_image = soup.find('meta', property='og:image')
-            if og_image and og_image.get('content'):
+            if og_image and hasattr(og_image, 'get') and og_image.get('content'):
                 logger.debug("Found image URL in og:image meta tag.")
                 try:
-                    return HttpUrl(og_image['content'])
+                    content = og_image.get('content')
+                    if isinstance(content, str):
+                        return content
                 except Exception:
-                    logger.warning(f"og:image URL '{og_image['content']}' is not a valid HttpUrl.")
+                    logger.warning(f"og:image URL is not valid.")
 
             # 2. Look for specific image elements used by Home.dk
             specific_selectors = '.property-details-main__header img, .image-gallery-preview img'
             property_images = soup.select(specific_selectors)
             if property_images:
                 for img in property_images:
-                    src = img.get('src')
-                    if src and src.startswith('http'):
-                        logger.debug(f"Found image URL in specific selector: {specific_selectors}")
-                        try:
-                            return HttpUrl(src)
-                        except Exception:
-                            logger.warning(f"Property image URL '{src}' is not a valid HttpUrl.")
+                    if hasattr(img, 'get'):
+                        src = img.get('src')
+                        if isinstance(src, str) and src.startswith('http'):
+                            logger.debug(f"Found image URL in specific selector: {specific_selectors}")
+                            return src
 
             # 3. Fall back to generic image extraction
             logger.debug("No specific image found, falling back to generic extraction.")
-            image_url = await html_utils.extract_first_image_url(soup)
+            # Pass the HTML content and base URL to extract_first_image_url
+            image_url = await html_utils.extract_first_image_url(html_content=html_content, base_url="https://home.dk")
             if image_url:
-                try:
-                    return HttpUrl(image_url)
-                except Exception:
-                    logger.warning(f"Generic image URL '{image_url}' is not a valid HttpUrl.")
+                return image_url
 
             logger.debug("No suitable image URL found by HomeProvider.")
             return None
@@ -82,14 +80,12 @@ class HomeProvider(BaseProvider):
         logger.info(f"Parsing HTML with HomeProvider for URL: {url}")
         try:
             extracted_text = await html_utils.extract_text_from_html(html_content)
-            original_link = url
             validated_original_link: Optional[HttpUrl] = None
 
-            if original_link:
-                try:
-                    validated_original_link = HttpUrl(original_link)
-                except Exception:
-                    logger.warning(f"Input URL '{original_link}' is not a valid HttpUrl for ParseResult.")
+            try:
+                validated_original_link = HttpUrl(url)
+            except Exception:
+                logger.warning(f"Input URL '{url}' is not a valid HttpUrl for ParseResult.")
 
             return ParseResult(
                 original_link=validated_original_link,
@@ -99,6 +95,6 @@ class HomeProvider(BaseProvider):
         except Exception as error:
             logger.error(f"Failed to parse HTML with HomeProvider for {url}", exc_info=error)
             return ParseResult(
-                original_link=url,
+                original_link=None,
                 extracted_text=f"Failed to parse content from {url} using HomeProvider: {error}"
             )

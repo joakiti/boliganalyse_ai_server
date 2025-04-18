@@ -1,10 +1,9 @@
 from pydantic import BaseModel, Field, create_model
 from typing import Dict, List, Optional, Any, Type, Literal
 
-# Mapping from JSON Schema types to Python types
 TYPE_MAP = {
     "string": str,
-    "number": float, # Use float for broader compatibility (includes integers)
+    "number": float,
     "integer": int,
     "boolean": bool,
     "array": list,
@@ -16,7 +15,6 @@ class ToolProperty(BaseModel):
     type: str = Field(..., description="The JSON schema type of the property (e.g., 'string', 'number').")
     description: Optional[str] = Field(None, description="A description of what the property represents.")
     enum: Optional[List[Any]] = Field(None, description="Optional list of allowed values for the property.")
-    # Add other JSON schema fields as needed (e.g., format, items for arrays)
 
 class ToolInputSchema(BaseModel):
     """Describes the input schema for a tool, following JSON Schema structure."""
@@ -35,12 +33,8 @@ class ToolInputSchema(BaseModel):
 
             # Handle optional vs. required fields
             is_required = name in self.required
-            field_default = ... if is_required else None # Ellipsis (...) marks required fields in Pydantic
+            field_default = ... if is_required else None
 
-            # Create field definition
-            # For enums, we can use Literal if Pydantic version supports it well dynamically,
-            # otherwise, validation might need custom logic or rely on standard type checks.
-            # Simple approach for now: rely on type check and upstream validation for enum values.
             fields[name] = (python_type, Field(default=field_default, description=prop.description))
 
         if not fields:
