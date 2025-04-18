@@ -19,6 +19,17 @@ HTTP_TIMEOUT = 30.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
 
+def update_listing_successful(analysis_result, listing, primary_html, primary_text, redirect_html,
+                              redirect_parsed_text, redirect_url):
+    listing.status = AnalysisStatus.COMPLETED
+    listing.analysis_result = analysis_result
+    listing.html_url = primary_html
+    listing.text_extracted = primary_text
+    listing.html_url_redirect = redirect_html if redirect_html else None
+    listing.text_extracted_redirect = redirect_parsed_text if redirect_parsed_text else None
+    listing.url_redirect = redirect_url if redirect_url else None
+
+
 class AnalysisService:
     def __init__(self):
         self.listing_repository = ListingRepository()
@@ -77,53 +88,57 @@ class AnalysisService:
                 logger.error(f"[{listing_id}] Listing not found. Aborting analysis task.")
                 return
 
-            # Set status to PROCESSING immediately
             listing.status = AnalysisStatus.FETCHING_HTML
-            listing = await self.listing_repository.save(listing) # Save PROCESSING status
+            listing = await self.listing_repository.save(listing)
 
-            # --- Primary Fetch & Parse ---
             primary_html = await fetch_html_content(listing.url)
-            listing.html_content_primary = primary_html
+
             provider: Optional[BaseProvider] = self.provider_registry.get_provider_for_content(listing.url)
+
             if not provider:
                 raise ValueError(f"No provider available for primary URL: {listing.url}")
+
             parse_result_primary: ParseResult = await provider.parse_html(listing.url, primary_html)
-            primary_text = parse_result_primary.extracted_text or "" # Use attribute access
+            primary_text = parse_result_primary.extracted_text
 
-            # --- Source Fetch & Parse (Optional) ---
-            source_url = parse_result_primary.original_link # Use attribute access
-            secondary_text = None
-            source_parse_result: Optional[ParseResult] = None # Define type for clarity
-            # Ensure source_url is treated as string for comparison if it's a PydanticUrl
-            source_url_str = str(source_url) if source_url else None
+            source_url = parse_result_primary.original_link
 
-            if source_url_str and source_url_str != listing.url:
-                listing.source_url = source_url_str # Store the string representation
+            redirect_parsed_text = None
+            redirect_url = str(source_url) if source_url else None
+            redirect_html: Optional[str] = None
+
+            if redirect_url and redirect_url != listing.url:
+                listing.source_url = redirect_url # Store the string representation
                 try:
-                    logger.info(f"[{listing_id}] Processing source URL: {source_url_str}")
-                    source_html = await fetch_html_content(source_url_str)
-                    listing.html_content_secondary = source_html
-                    source_provider: Optional[BaseProvider] = self.provider_registry.get_provider_for_content(source_url_str)
-                    if source_provider:
-                        source_parse_result = await source_provider.parse_html(source_url_str, source_html)
-                        # Use attribute access, check if source_parse_result is not None
-                        secondary_text = source_parse_result.extracted_text if source_parse_result else None
-                    else:
-                        logger.warning(f"[{listing_id}] No provider found for source URL: {source_url_str}")
-                except Exception as source_error:
-                    logger.warning(f"[{listing_id}] Failed to process source URL {source_url}: {source_error}", exc_info=False) # Log less verbosely
-                    listing.html_content_secondary = f"Error fetching/parsing source: {source_error}" # Store error info
 
-            # --- AI Analysis ---
+                    logger.info(f"[{listing_id}] Processing source URL: {redirect_url}")
+                    redirect_html = await fetch_html_content(redirect_url)
+                    source_provider: Optional[BaseProvider] = self.provider_registry.get_provider_for_content(redirect_url)
+
+                    if source_provider:
+                        redirect_parse_result = await source_provider.parse_html(redirect_url, redirect_html)
+                        redirect_parsed_text = redirect_parse_result.extracted_text if redirect_parse_result else None
+
+                    else:
+                        logger.warning(f"[{listing_id}] No provider found for source URL: {redirect_url}")
+                        listing.error_message = "No provider found for source URL"
+                except Exception as source_error:
+                    logger.warning(f"[{listing_id}] Failed to process source URL {source_url}: {source_error}", exc_info=False)
+                    listing.error_message = f"Error fetching/parsing source: {source_error}" # Store error info
+
             analysis_result = await self.ai_analyzer.analyze_multiple_texts(
                 primary_text=primary_text,
-                secondary_text=secondary_text
+                secondary_text=redirect_parsed_text
             )
-            listing.analysis_result = analysis_result
 
-            # --- Finalize ---
-            listing.status = AnalysisStatus.COMPLETED
-            listing.error_message = None # Clear any previous error
+            update_listing_successful(analysis_result,
+                                      listing,
+                                      primary_html,
+                                      primary_text,
+                                      redirect_html,
+                                      redirect_parsed_text,
+                                      redirect_url)
+
             await self.listing_repository.save(listing)
             logger.info(f"[{listing_id}] Analysis task completed successfully.")
 
@@ -137,4 +152,4 @@ class AnalysisService:
                     logger.info(f"[{listing_id}] Saved listing with ERROR status.")
                 except Exception as save_err:
                     logger.critical(f"[{listing_id}] CRITICAL: Failed to save ERROR status after analysis failure: {save_err}", exc_info=True)
-            # No else needed, if listing is None, the error is already logged.
+
