@@ -1,10 +1,10 @@
 import httpx
 import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, cast
 from enum import Enum
 
 from src.app.services.tools.base_tool import BaseTool
-from src.app.schemas.tool_calling import ToolDefinition, ToolProperty
+from src.app.schemas.tool_calling import ToolDefinition, ToolProperty, ToolInputSchema
 
 DST_API_BASE_URL = "https://api.statbank.dk/v1"
 
@@ -13,27 +13,24 @@ DST_API_BASE_URL = "https://api.statbank.dk/v1"
 GET_SUBJECTS_TOOL_DEFINITION = ToolDefinition(
     name="get_dst_subjects",
     description="Retrieves subjects (categories) from the Danmarks Statistik (DST) API. Subjects can be hierarchical.",
-    input_schema={
-        "type": "object",
-        "properties": {
+    input_schema=ToolInputSchema(
+        type="object",
+        properties={
             "subjects": ToolProperty(
                 type="array",
-                description="Optional list of parent subject IDs to retrieve children for. If omitted, retrieves root subjects.",
-                items={"type": "string"}
+                description="Optional list of parent subject IDs to retrieve children for. If omitted, retrieves root subjects."
             ),
             "recursive": ToolProperty(
                 type="boolean",
-                description="If true, retrieves all descendants recursively. Defaults to false.",
-                default=False
+                description="If true, retrieves all descendants recursively. Defaults to false."
             ),
             "lang": ToolProperty(
                 type="string",
-                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'.",
-                default="en"
+                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'."
             )
         },
-        "required": []
-    }
+        required=[]
+    )
 )
 
 class GetSubjectsTool(BaseTool):
@@ -74,13 +71,12 @@ class GetSubjectsTool(BaseTool):
 GET_TABLES_TOOL_DEFINITION = ToolDefinition(
     name="get_dst_tables",
     description="Retrieves a list of tables from the Danmarks Statistik (DST) API, optionally filtered by subject and update recency.",
-    input_schema={
-        "type": "object",
-        "properties": {
+    input_schema=ToolInputSchema(
+        type="object",
+        properties={
             "subjects": ToolProperty(
                 type="array",
-                description="Optional list of subject IDs to filter tables by. If omitted, retrieves tables from all subjects.",
-                items={"type": "string"}
+                description="Optional list of subject IDs to filter tables by. If omitted, retrieves tables from all subjects."
             ),
             "pastDays": ToolProperty(
                 type="integer",
@@ -88,17 +84,15 @@ GET_TABLES_TOOL_DEFINITION = ToolDefinition(
             ),
             "includeInactive": ToolProperty(
                 type="boolean",
-                description="If true, includes inactive tables in the result. Defaults to false.",
-                default=False
+                description="If true, includes inactive tables in the result. Defaults to false."
             ),
             "lang": ToolProperty(
                 type="string",
-                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'.",
-                default="en"
+                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'."
             )
         },
-        "required": []
-    }
+        required=[]
+    )
 )
 
 class GetTablesTool(BaseTool):
@@ -139,21 +133,20 @@ class GetTablesTool(BaseTool):
 GET_TABLE_INFO_TOOL_DEFINITION = ToolDefinition(
     name="get_dst_table_info",
     description="Retrieves detailed metadata about a specific table from the Danmarks Statistik (DST) API, including variables, values, and time periods.",
-    input_schema={
-        "type": "object",
-        "properties": {
+    input_schema=ToolInputSchema(
+        type="object",
+        properties={
             "tableId": ToolProperty(
                 type="string",
                 description="The ID of the table to retrieve information for."
             ),
             "lang": ToolProperty(
                 type="string",
-                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'.",
-                default="en"
+                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'."
             )
         },
-        "required": ["tableId"]
-    }
+        required=["tableId"]
+    )
 )
 
 class GetTableInfoTool(BaseTool):
@@ -197,43 +190,29 @@ class DSTDataFormat(Enum):
 GET_DATA_TOOL_DEFINITION = ToolDefinition(
     name="get_dst_data",
     description="Retrieves data from a specific table in the Danmarks Statistik (DST) API based on selected variables and values.",
-    input_schema={
-        "type": "object",
-        "properties": {
+    input_schema=ToolInputSchema(
+        type="object",
+        properties={
             "tableId": ToolProperty(
                 type="string",
                 description="The ID of the table to retrieve data from."
             ),
             "lang": ToolProperty(
                 type="string",
-                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'.",
-                default="en"
+                description="Language for the response (e.g., 'en', 'da'). Defaults to 'en'."
             ),
             "format": ToolProperty(
                 type="string",
                 description="The desired format for the data response.",
-                enum=[f.value for f in DSTDataFormat],
-                default=DSTDataFormat.JSONSTAT.value
+                enum=[f.value for f in DSTDataFormat]
             ),
             "variables": ToolProperty(
                 type="array",
-                description="An array specifying the variables and their selected values to include in the data retrieval.",
-                items={
-                    "type": "object",
-                    "properties": {
-                        "code": ToolProperty(type="string", description="The code (ID) of the variable."),
-                        "values": ToolProperty(
-                            type="array",
-                            description="An array of specific values for the variable to retrieve. Use ['*'] to select all values.",
-                            items={"type": "string"}
-                        )
-                    },
-                    "required": ["code", "values"]
-                }
+                description="An array specifying the variables and their selected values to include in the data retrieval."
             )
         },
-        "required": ["tableId", "variables"]
-    }
+        required=["tableId", "variables"]
+    )
 )
 
 class GetDataTool(BaseTool):
@@ -249,8 +228,10 @@ class GetDataTool(BaseTool):
             "lang": params.get("lang", "en"),
             "variables": params["variables"]
         }
+        # Filter out keys with None values
+        payload = {k: v for k, v in payload.items() if v is not None}
 
-        async with httpx.AsyncClient(timeout=60.0) as client: # Increased timeout for potentially large data requests
+        async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(
                     f"{DST_API_BASE_URL}/data",
@@ -258,22 +239,10 @@ class GetDataTool(BaseTool):
                     headers={"Content-Type": "application/json"}
                 )
                 response.raise_for_status()
-
-                # Return the response text directly, as Claude expects a string result.
-                # For binary formats like XLSX, this might return garbled text,
-                # but handling binary data requires more complex logic (e.g., base64 encoding)
-                # which might exceed Claude's token limits or processing capabilities for the result.
-                # Returning text is consistent with how JSON/CSV would be handled.
-                return response.text
-
+                return response.text # Return raw JSON string
             except httpx.HTTPStatusError as e:
-                # Try to parse error details if available
-                try:
-                    details = e.response.json()
-                except json.JSONDecodeError:
-                    details = e.response.text
-                return json.dumps({"error": f"DST API data request failed: {e.response.status_code}", "details": details})
+                return json.dumps({"error": f"DST API request failed: {e.response.status_code}", "details": e.response.text})
             except httpx.RequestError as e:
-                return json.dumps({"error": f"DST API data request failed: {str(e)}"})
+                return json.dumps({"error": f"DST API request failed: {str(e)}"})
             except Exception as e:
-                return json.dumps({"error": f"An unexpected error occurred during data retrieval: {str(e)}"})
+                return json.dumps({"error": f"An unexpected error occurred: {str(e)}"})

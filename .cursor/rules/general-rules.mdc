@@ -1,0 +1,56 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+Type Safety Rules:
+All variables must have explicit type annotations
+Avoid using Any type unless absolutely necessary
+Handle potential None values properly using type guards or optional types
+Use proper type hints for function parameters and return values
+Attribute Access Rules:
+Always check if an object has an attribute before accessing it
+Use proper type guards when dealing with union types
+Handle cases where attributes might be None
+Collection Type Rules:
+Use proper type hints for collections (lists, dicts, etc.)
+Ensure index types match the collection type
+Handle cases where collections might be empty or None
+Function Call Rules:
+Ensure all required arguments are provided
+Match argument types with function signatures
+Handle optional arguments properly
+Import Rules:
+Use proper type stubs for external libraries
+Add py.typed marker for packages that support type checking
+Handle missing type stubs appropriately
+Async/Await Rules:
+Properly type coroutines and async functions
+Use proper await syntax
+Handle async context managers correctly
+Error Handling Rules:
+Use proper exception handling with type safety
+Return appropriate error types
+Handle edge cases in error scenarios
+Class and Method Rules:
+Ensure all class attributes are properly typed
+Use proper inheritance typing
+Handle method overrides correctly
+API Response Handling Rules:
+Properly type API responses
+Handle nullable response fields
+Use proper type guards for response data
+Testing Rules:
+Properly type test fixtures and mocks
+Handle async test cases correctly
+Use proper type assertions in tests
+The main files that need attention are:
+src/app/lib/html_utils.py
+src/app/services/tools/dst_api_tools.py
+src/app/lib/providers/json_ld_provider.py
+src/app/lib/providers/home_provider.py
+src/app/services/ai_analyzer.py
+src/app/repositories/listing_repository.py
+tests/repositories/test_listing_repository.py
+Would you like me to start fixing these issues systematically? We can tackle them one file at a time, starting with the most critical ones first.

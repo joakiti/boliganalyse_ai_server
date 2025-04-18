@@ -1,13 +1,13 @@
 import logging
 import httpx
-from typing import Optional
-from bs4 import BeautifulSoup, Comment
+from typing import Optional, Union, List, Any, cast
+from bs4 import BeautifulSoup, Comment, Tag, NavigableString, PageElement, ResultSet
 from .url_utils import resolve_url
 
 logger = logging.getLogger(__name__)
 
 # Elements to ignore when extracting text
-TEXT_IGNORE_TAGS = ['script', 'style', 'noscript', 'iframe', 'header'] # Keep nav and footer
+TEXT_IGNORE_TAGS: List[str] = ['script', 'style', 'noscript', 'iframe', 'header'] # Keep nav and footer
 # Elements that often contain main content (can be used for targeted extraction if needed)
 # CONTENT_TAGS = ['main', 'article', 'section', 'div[role="main"]']
 
@@ -20,34 +20,41 @@ async def extract_text_from_html(html_content: str) -> str:
         return ""
 
     try:
-        soup = BeautifulSoup(html_content, 'lxml') # Use lxml parser
+        soup: BeautifulSoup = BeautifulSoup(html_content, 'lxml') # Use lxml parser
 
         # Extract title and meta description first
-        title_text = soup.title.string.strip() if soup.title else ""
-        meta_desc_tag = soup.find('meta', attrs={'name': 'description'})
-        meta_desc_text = meta_desc_tag['content'].strip() if meta_desc_tag and meta_desc_tag.get('content') else ""
+        title_text: str = ""
+        if soup.title and isinstance(soup.title, Tag) and isinstance(soup.title.string, str):
+            title_text = soup.title.string.strip()
+            
+        meta_desc_tag: Optional[Tag] = cast(Optional[Tag], soup.find('meta', attrs={'name': 'description'}))
+        meta_desc_text: str = ""
+        if meta_desc_tag and meta_desc_tag.get('content'):
+            content = meta_desc_tag.get('content')
+            if isinstance(content, str):
+                meta_desc_text = content.strip()
 
         # Remove ignored tags and comments from the body or main content area
-        body = soup.body if soup.body else soup # Fallback to whole soup if no body
+        body: Union[Tag, BeautifulSoup] = soup.body if soup.body else soup # Fallback to whole soup if no body
         if body:
-             for element in body(TEXT_IGNORE_TAGS):
+             for element in body.find_all(TEXT_IGNORE_TAGS):
                  element.decompose()
              for comment in body.find_all(string=lambda text: isinstance(text, Comment)):
                  comment.extract()
         else: # Should not happen with valid HTML, but as a safeguard
-             for element in soup(TEXT_IGNORE_TAGS):
+             for element in soup.find_all(TEXT_IGNORE_TAGS):
                  element.decompose()
              for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
                  comment.extract()
              body = soup # Use the cleaned soup
 
         # Get text from the cleaned body
-        body_lines = [line.strip() for line in body.stripped_strings] if body else []
-        body_text = ' '.join(body_lines) # Join with spaces
+        body_lines: List[str] = [line.strip() for line in body.stripped_strings] if body else []
+        body_text: str = ' '.join(body_lines) # Join with spaces
 
         # Combine title, meta description, and body text
-        all_texts = [text for text in [title_text, meta_desc_text, body_text] if text]
-        text = ' '.join(all_texts) # Join parts with spaces
+        all_texts: List[str] = [text for text in [title_text, meta_desc_text, body_text] if text]
+        text: str = ' '.join(all_texts) # Join parts with spaces
 
         # Get text, trying to preserve some structure with newlines
         # text = soup.get_text(separator='\n', strip=True)
@@ -72,34 +79,40 @@ async def extract_first_image_url(html_content: str, base_url: str) -> Optional[
         return None
 
     try:
-        soup = BeautifulSoup(html_content, 'lxml')
+        soup: BeautifulSoup = BeautifulSoup(html_content, 'lxml')
 
         # 1. Check common meta tags (og:image, twitter:image)
         # Find potential og:image tags (case-insensitive property check)
-        og_image_content = None
-        meta_tags_property = soup.find_all('meta', attrs={'property': True})
+        meta_tags_property: ResultSet[PageElement] = soup.find_all('meta', attrs={'property': True})
         for tag in meta_tags_property:
-            if tag['property'].lower() == 'og:image' and tag.get('content'):
-                og_image_content = tag['content']
-                logger.debug("Found image URL in og:image meta tag.")
-                return resolve_url(base_url, og_image_content) # Return immediately
+            if not isinstance(tag, Tag):
+                continue
+            property_value = tag.get('property', '')
+            if isinstance(property_value, str) and property_value.lower() == 'og:image':
+                content = tag.get('content')
+                if isinstance(content, str):
+                    logger.debug("Found image URL in og:image meta tag.")
+                    return resolve_url(base_url, content)
 
         # Find potential twitter:image tags (case-insensitive name check)
-        twitter_image_content = None
-        meta_tags_name = soup.find_all('meta', attrs={'name': True})
+        meta_tags_name: ResultSet[PageElement] = soup.find_all('meta', attrs={'name': True})
         for tag in meta_tags_name:
-            # Common variations: 'twitter:image', 'twitter:image:src'
-            if tag['name'].lower() in ('twitter:image', 'twitter:image:src') and tag.get('content'):
-                twitter_image_content = tag['content']
-                logger.debug("Found image URL in twitter:image meta tag.")
-                return resolve_url(base_url, twitter_image_content) # Return immediately
+            if not isinstance(tag, Tag):
+                continue
+            name_value = tag.get('name', '')
+            if isinstance(name_value, str) and name_value.lower() in ('twitter:image', 'twitter:image:src'):
+                content = tag.get('content')
+                if isinstance(content, str):
+                    logger.debug("Found image URL in twitter:image meta tag.")
+                    return resolve_url(base_url, content)
 
         # 2. Look for image tags, prioritizing larger ones or those in specific containers
-        # This requires more heuristics - simple approach for now: find first valid img src
-        all_imgs = soup.find_all('img')
+        all_imgs: ResultSet[PageElement] = soup.find_all('img')
         for img in all_imgs:
+            if not isinstance(img, Tag):
+                continue
             src = img.get('src')
-            if src: # Check if src exists first
+            if isinstance(src, str):
                 resolved_src = resolve_url(base_url, src)
                 if resolved_src and resolved_src.startswith('http') and \
                    '.svg' not in resolved_src.lower() and \
@@ -110,9 +123,7 @@ async def extract_first_image_url(html_content: str, base_url: str) -> Optional[
                    'spinner' not in resolved_src.lower() and \
                    'loading' not in resolved_src.lower() and \
                    'placeholder' not in resolved_src.lower():
-                    # Basic filtering for likely content images
                     logger.debug(f"Found potential image URL in img tag: {resolved_src}")
-                    # Add width/height checks later if needed
                     return resolved_src
 
         logger.debug("No suitable image URL found in meta tags or img tags.")
@@ -123,15 +134,15 @@ async def extract_first_image_url(html_content: str, base_url: str) -> Optional[
         return None
 
 # HTML fetching utility
-HTTP_TIMEOUT = 30.0  # seconds
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+HTTP_TIMEOUT: float = 30.0  # seconds
+USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
 async def fetch_html_content(url: str) -> str:
     """
     Fetch HTML content from a URL.
     """
     logger.info(f"Fetching HTML from {url}")
-    headers = {
+    headers: dict[str, str] = {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml"
     }
