@@ -44,7 +44,7 @@ class JsonLdProvider(BaseProvider):
             json_ld_scripts = soup.find_all('script', type='application/ld+json')
             for script in json_ld_scripts:
                 try:
-                    if script.string:
+                    if isinstance(script, Tag) and script.string:
                         data = json.loads(script.string)
                         items = data if isinstance(data, list) else [data]
                         for item in items:
@@ -72,7 +72,8 @@ class JsonLdProvider(BaseProvider):
 
             # 2. Fallback to meta tags (using html_utils)
             logger.debug("No suitable image in JSON-LD, checking meta tags and generic extraction.")
-            meta_image = await html_utils.extract_first_image_url(html_content)
+            # Pass empty string as base_url if we don't have one
+            meta_image = await html_utils.extract_first_image_url(html_content, base_url="")
             if meta_image:
                 return meta_image
 
@@ -103,7 +104,7 @@ class JsonLdProvider(BaseProvider):
             json_ld_scripts = soup.find_all('script', type='application/ld+json')
             for script in json_ld_scripts:
                  try:
-                     if script.string:
+                     if isinstance(script, Tag) and script.string:
                          data = json.loads(script.string)
                          # Add to list whether it's a single object or a list itself
                          if isinstance(data, list):

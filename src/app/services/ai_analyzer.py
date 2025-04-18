@@ -1,27 +1,21 @@
-import logging
-import json
 import asyncio
-from typing import Dict, Any, Optional, List, Union
+import json
+import logging
+from typing import Dict, Any, Optional, List, Union, Iterable, cast
 
 import anthropic
 from anthropic.types import (
     Message,
     ContentBlock,
     TextBlockParam,
-    Usage,
+    ImageBlockParam,
     MessageParam,
-    MessageCreateParams,
-    ContentBlockDeltaEvent,
-    ContentBlockStartEvent,
-    ContentBlockStopEvent,
-    MessageDeltaEvent,
-    MessageStartEvent,
-    MessageStopEvent,
-    MessageStreamEvent,
 )
+
 from src.app.core.config import settings
-from src.app.schemas.analyze import AnalysisResultData # For potential validation
-from src.app.schemas.tool_calling import ToolCallRequest, ToolCallResponse # Assuming these are still relevant for internal logic
+from src.app.schemas.analyze import AnalysisResultData  # For potential validation
+from src.app.schemas.tool_calling import ToolCallRequest, \
+    ToolCallResponse  # Assuming these are still relevant for internal logic
 from src.app.services.tool_registry import ToolRegistryService
 from src.app.services.tools.dst_api_tools import (
     GetSubjectsTool,
@@ -35,11 +29,12 @@ logger = logging.getLogger(__name__)
 # Constants from config
 CLAUDE_API_KEY = settings.ANTHROPIC_API_KEY
 CLAUDE_MODEL = "claude-3-5-sonnet-20240620"
-CLAUDE_MAX_TOKENS = 4096 # Increased slightly as per Claude docs recommendation for tool use
+CLAUDE_MAX_TOKENS = 4096  # Increased slightly as per Claude docs recommendation for tool use
 CLAUDE_TEMPERATURE = 0.5
 API_TIMEOUT = 180.0
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
+
 
 # Headers (Anthropic library usually handles versioning, Beta might be needed)
 # ANTHROPIC_VERSION_HEADER = "2023-06-01"
@@ -50,10 +45,11 @@ class AIAnalyzerService:
     Service for performing AI analysis on text using the Anthropic Claude API
     with tool calling capabilities.
     """
+
     def __init__(self):
         if not CLAUDE_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY is not set in environment variables.")
-        
+
         self.client = anthropic.Client(api_key=CLAUDE_API_KEY)
         self.tool_registry = ToolRegistryService()
 
@@ -63,8 +59,8 @@ class AIAnalyzerService:
         self.tool_registry.register_tool(GetTableInfoTool())
         self.tool_registry.register_tool(GetDataTool())
         # Do NOT register Dingeo tool here as per instructions
-        logger.info(f"Registered tools: {[definition.name for definition in self.tool_registry.get_all_tool_definitions()]}")
-
+        logger.info(
+            f"Registered tools: {[definition.name for definition in self.tool_registry.get_all_tool_definitions()]}")
 
     def _create_analysis_prompt(self, text_content: str) -> str:
         """Creates the detailed prompt for Claude API, adapted from TypeScript version."""
@@ -203,13 +199,13 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
                     json_start = raw_text.find("{", json_block_start)
                     json_end = raw_text.rfind("}", json_start)
                     if json_start != -1 and json_end != -1:
-                         json_text = raw_text[json_start : json_end + 1]
-                         logger.warning("Found JSON within ```json block after initial failure.")
-                         return json.loads(json_text)
+                        json_text = raw_text[json_start: json_end + 1]
+                        logger.warning("Found JSON within ```json block after initial failure.")
+                        return json.loads(json_text)
 
                 raise ValueError("AI response did not contain a valid JSON object.")
 
-            json_text = raw_text[json_start : json_end + 1]
+            json_text = raw_text[json_start: json_end + 1]
             parsed_json = json.loads(json_text)
             return parsed_json
         except json.JSONDecodeError as e:
@@ -220,63 +216,42 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
             raise
 
     async def _make_claude_request(
-        self,
-        messages: List[MessageParam],
-        tools: List[Dict[str, Any]],
-        retry_count: int = 0
+            self,
+            messages: List[MessageParam],
+            tools: List[Dict[str, Any]],
+            retry_count: int = 0
     ) -> Message:
         """Makes a request to the Claude API, handling retries for rate limits."""
         try:
-            # logger.debug(f"Claude Request - Messages: {json.dumps(messages, indent=2)}")
-            # logger.debug(f"Claude Request - Tools: {json.dumps(tools, indent=2)}")
             message_response = await self.client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=CLAUDE_MAX_TOKENS,
                 temperature=CLAUDE_TEMPERATURE,
                 messages=messages,
-                tools=tools,
-                # headers={ # Usually handled by the library
-                #     "anthropic-version": ANTHROPIC_VERSION_HEADER,
-                #     "anthropic-beta": ANTHROPIC_BETA_HEADER
-                # }
+                extra_headers={
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "token-efficient-tools-2025-02-19",
+                },
+                tools=[]
             )
-            # logger.debug(f"Claude Raw Response: {message_response}")
             return message_response
 
         except anthropic.RateLimitError as e:
             if retry_count < MAX_RETRIES:
-                logger.warning(f"Rate limit exceeded. Retrying in {RETRY_DELAY_SECONDS}s... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+                logger.warning(
+                    f"Rate limit exceeded. Retrying in {RETRY_DELAY_SECONDS}s... (Attempt {retry_count + 1}/{MAX_RETRIES})")
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
                 return await self._make_claude_request(messages, tools, retry_count + 1)
             else:
                 logger.error(f"Rate limit exceeded after {MAX_RETRIES} retries.", exc_info=True)
                 raise RuntimeError("AI service rate limit exceeded after multiple retries.") from e
-        except anthropic.APIConnectionError as e:
-            logger.error(f"Anthropic API connection error: {e}", exc_info=True)
-            raise RuntimeError("Failed to connect to AI service.") from e
-        except anthropic.APIStatusError as e:
-            logger.error(f"Anthropic API status error: {e.status_code} - {e.response}", exc_info=True)
-            raise RuntimeError(f"AI service returned an error (Status {e.status_code}).") from e
-        except Exception as e:
-            logger.error(f"Unexpected error during Claude API call: {e}", exc_info=True)
-            raise RuntimeError("An unexpected error occurred during AI analysis.") from e
-
 
     async def analyze_with_tools(self, initial_prompt: str) -> Dict[str, Any]:
-        """
-        Analyzes text using Claude API with a tool calling loop.
-
-        Args:
-            initial_prompt: The initial user prompt for the analysis.
-
-        Returns:
-            A dictionary representing the structured analysis result (JSON).
-        """
         logger.info("Starting AI analysis with tool calling.")
         if not self.client:
-             raise RuntimeError("Anthropic client not initialized.")
+            raise RuntimeError("Anthropic client not initialized.")
 
-        tools = self.tool_registry.get_tool_definitions()
+        tools = self.tool_registry.get_all_tool_definitions()
         messages: List[MessageParam] = [{"role": "user", "content": initial_prompt}]
         final_text_response = ""
 
@@ -284,40 +259,44 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
             logger.info(f"Calling Claude API. Message count: {len(messages)}")
             response: Message = await self._make_claude_request(messages, tools)
 
-            # Append the assistant's response message to the history
-            # We need to construct the dictionary representation expected by the API
+
             assistant_response_content: List[Union[Dict[str, Any], ContentBlock]] = []
             if response.content:
-                # Convert Pydantic models back to dicts for the next API call if needed
-                # The library might handle this automatically, but being explicit can help debugging
                 for block in response.content:
                     if hasattr(block, 'text'):
                         assistant_response_content.append({"type": "text", "text": block.text})
                     elif hasattr(block, 'name') and hasattr(block, 'input'):
+                        block_with_id = cast(Any, block)
                         assistant_response_content.append({
                             "type": "tool_use",
-                            "id": block.id,
+                            "id": block_with_id.id,
                             "name": block.name,
                             "input": block.input
                         })
 
-            if assistant_response_content: # Only append if there's content
-                messages.append({"role": "assistant", "content": assistant_response_content})
+            if assistant_response_content:
+                messages.append({
+                    "role": "assistant",
+                    "content": cast(Iterable[Union[TextBlockParam, ImageBlockParam, ContentBlock]],
+                                    assistant_response_content)
+                })
 
             # Process the response blocks
             tool_calls_requested = False
-            tool_results_content: List[Dict[str, Any]] = [] # Content for the next user message
+            tool_results_content: List[Dict[str, Any]] = []
 
             for block in response.content:
                 if hasattr(block, 'text'):
                     logger.debug(f"Received text block: {block.text[:100]}...")
-                    final_text_response += block.text # Accumulate text responses
+                    final_text_response += block.text  # Accumulate text responses
 
                 elif hasattr(block, 'name') and hasattr(block, 'input'):
                     tool_calls_requested = True
                     tool_name = block.name
                     tool_input = block.input
-                    tool_call_id = block.id
+                    # Type checking for ContentBlock with tool use attributes
+                    block_with_id = cast(Any, block)  # Cast to Any to access id attribute
+                    tool_call_id = block_with_id.id
                     logger.info(f"AI requested tool call: {tool_name} with ID: {tool_call_id}")
 
                     tool_request = ToolCallRequest(tool_name=tool_name, parameters=tool_input)
@@ -333,7 +312,7 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
                                 "type": "tool_result",
                                 "tool_use_id": tool_call_id,
                                 "content": tool_result_str,
-                                "is_error": True # Explicitly mark as error
+                                "is_error": True  # Explicitly mark as error
                             })
                         else:
                             # Claude expects the tool result content as a string.
@@ -343,7 +322,7 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
                             elif isinstance(tool_response.result, str):
                                 tool_result_str = tool_response.result
                             else:
-                                tool_result_str = str(tool_response.result) # Fallback
+                                tool_result_str = str(tool_response.result)  # Fallback
 
                             logger.info(f"Tool {tool_name} executed successfully.")
                             # Append success result
@@ -371,7 +350,13 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
 
             # If tools were called, add a user message with the results and continue loop
             if tool_results_content:
-                messages.append({"role": "user", "content": tool_results_content})
+                # Create a properly typed message
+                tool_message: MessageParam = {
+                    "role": "user",
+                    "content": cast(Iterable[Union[TextBlockParam, ImageBlockParam, ContentBlock]],
+                                    tool_results_content)
+                }
+                messages.append(tool_message)
             else:
                 # Should not happen if tool_calls_requested was True, but handle defensively
                 logger.warning("Tool calls were requested, but no results were generated. Breaking loop.")
@@ -380,13 +365,20 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
         # After the loop, extract the final JSON from the accumulated text response
         logger.info("AI analysis loop finished. Extracting final JSON.")
         if not final_text_response:
-             # Handle cases where the AI might *only* respond with tool calls initially
-             # and the final response might be in the last assistant message without tool calls.
-             last_message = messages[-1] if messages else {}
-             if last_message.get("role") == "assistant":
-                 for block_dict in last_message.get("content", []):
-                     if block_dict.get("type") == "text":
-                         final_text_response += block_dict.get("text", "")
+            # Handle cases where the AI might *only* respond with tool calls initially
+            # and the final response might be in the last assistant message without tool calls.
+            last_message = messages[-1] if messages else {}
+            if last_message.get("role") == "assistant":
+                # Type check each content block
+                for block_item in last_message.get("content", []):
+                    # Handle both dict and actual ContentBlock
+                    if isinstance(block_item, dict) and block_item.get("type") == "text":
+                        text_content = block_item.get("text", "")
+                        if text_content:
+                            final_text_response += text_content
+                    # Handle ContentBlock directly if needed
+                    elif hasattr(block_item, "text") and block_item.text:
+                        final_text_response += block_item.text
 
         if not final_text_response:
             logger.error("No final text response received from AI after tool interactions.")
@@ -396,15 +388,14 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
 
         # Optional: Validate the extracted JSON against Pydantic schema
         try:
-            _ = AnalysisResultData(**analysis_json) # Validate structure
+            _ = AnalysisResultData(**analysis_json)  # Validate structure
             logger.info("AI analysis JSON successfully validated against schema.")
-        except Exception as e: # Catch Pydantic ValidationError specifically if needed
+        except Exception as e:  # Catch Pydantic ValidationError specifically if needed
             logger.warning(f"AI response JSON failed validation against AnalysisResultData schema: {e}")
             # Return the unvalidated JSON but log warning.
             pass
 
         return analysis_json
-
 
     async def analyze_text(self, text_content: str) -> Dict[str, Any]:
         """
@@ -432,9 +423,9 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
         return await self.analyze_with_tools(prompt)
 
     async def analyze_multiple_texts(
-        self,
-        primary_text: str,
-        secondary_text: Optional[str] = None
+            self,
+            primary_text: str,
+            secondary_text: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Analyzes combined primary and secondary text content.

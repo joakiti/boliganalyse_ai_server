@@ -61,9 +61,9 @@ class AnalysisService:
     async def start_analysis_task(self, listing_id: UUID) -> None:
         """Fetches, parses, analyzes, and saves listing data."""
         logger.info(f"[{listing_id}] Starting analysis task.")
-        listing: Listing = None
+
         try:
-            listing = await self.listing_repository.find_by_id(listing_id)
+            listing: Listing = await self.listing_repository.find_by_id(listing_id)
             if not listing:
                 logger.error(f"[{listing_id}] Listing not found. Aborting analysis task.")
                 return
@@ -124,16 +124,16 @@ class AnalysisService:
 
         except Exception as e:
             logger.error(f"[{listing_id}] Error during analysis task: {e}", exc_info=True)
-            if listing:
-                try:
-                    listing.status = AnalysisStatus.ERROR
-                    listing.error_message = str(e)
-                    await self.listing_repository.save(listing)
-                    logger.info(f"[{listing_id}] Saved listing with ERROR status.")
-                except Exception as save_err:
-                    logger.critical(
-                        f"[{listing_id}] CRITICAL: Failed to save ERROR status after analysis failure: {save_err}",
-                        exc_info=True)
+            listing: Listing = await self.listing_repository.find_by_id(listing_id)
+            try:
+                listing.status = AnalysisStatus.ERROR
+                listing.error_message = str(e)
+                await self.listing_repository.save(listing)
+                logger.info(f"[{listing_id}] Saved listing with ERROR status.")
+            except Exception as save_err:
+                logger.critical(
+                    f"[{listing_id}] CRITICAL: Failed to save ERROR status after analysis failure: {save_err}",
+                    exc_info=True)
 
     async def save_successful_listing(self, analysis_result, listing, primary_html, primary_text, redirect_html,
                                       redirect_parsed_text, redirect_url):
