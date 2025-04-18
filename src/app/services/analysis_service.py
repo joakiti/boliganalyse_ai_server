@@ -138,7 +138,7 @@ class AnalysisService:
     async def save_successful_listing(self, analysis_result, listing, primary_html, primary_text, redirect_html,
                                       redirect_parsed_text, redirect_url):
         listing.status = AnalysisStatus.COMPLETED
-        listing.analysis_result = analysis_result
+        listing.analysis = analysis_result
         listing.html_url = primary_html
         listing.text_extracted = primary_text
         listing.html_url_redirect = redirect_html if redirect_html else None

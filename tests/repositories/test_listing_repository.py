@@ -115,7 +115,7 @@ async def test_create_or_get_listing_creation(listing_repo: ListingRepository, c
     assert created_listing.url == test_url
     assert created_listing.normalized_url == normalized_url
     assert created_listing.status == AnalysisStatus.PENDING
-    assert created_listing.analysis_result is None
+    assert created_listing.analysis is None
     assert created_listing.error_message is None
     # Removed metadata assertion
     assert created_listing.created_at is not None
@@ -254,7 +254,7 @@ async def test_update_listing_full(listing_repo: ListingRepository, cleanup_list
     
     # Modify the listing and update it
     listing_to_update.status = AnalysisStatus.COMPLETED
-    listing_to_update.analysis_result = {"score": 0.85, "summary": "Looks good"}
+    listing_to_update.analysis = {"score": 0.85, "summary": "Looks good"}
     listing_to_update.error_message = None
     listing_to_update.url_redirect = "https://new.example.com/listing/123"
 
@@ -265,7 +265,7 @@ async def test_update_listing_full(listing_repo: ListingRepository, cleanup_list
     assert isinstance(updated_listing, Listing)
     assert updated_listing.id == created_listing.id
     assert updated_listing.status == AnalysisStatus.COMPLETED
-    assert updated_listing.analysis_result == {"score": 0.85, "summary": "Looks good"}
+    assert updated_listing.analysis == {"score": 0.85, "summary": "Looks good"}
     assert updated_listing.error_message is None
     assert updated_listing.url_redirect == "https://new.example.com/listing/123"
     # Removed metadata assertion

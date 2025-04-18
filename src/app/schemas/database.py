@@ -36,7 +36,7 @@ class Listing(BaseModel):
     status: AnalysisStatus = AnalysisStatus.PENDING
     url_redirect: Optional[str] = None
     property_image_url: Optional[str] = None
-    analysis_result: Optional[Dict[str, Any]] = None
+    analysis: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

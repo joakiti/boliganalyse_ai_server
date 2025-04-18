@@ -30,19 +30,10 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     description=description,
     version="0.1.0",
-    # Disable docs in production via config
     openapi_url=f"{settings.API_V1_STR}/openapi.json" if settings.ENVIRONMENT != "production" else None,
     docs_url=f"{settings.API_V1_STR}/docs" if settings.ENVIRONMENT != "production" else None,
     redoc_url=f"{settings.API_V1_STR}/redoc" if settings.ENVIRONMENT != "production" else None,
-    # lifespan will be assigned below
 )
-
-# --- Middleware ---
-# CORS
-# Adjust allow_origins for production deployments!
-# origins = ["http://localhost:5173", "http://127.0.0.1:5173"] # Your frontend dev URLs
-# if settings.FRONTEND_URL: origins.append(settings.FRONTEND_URL)
-# if settings.DEPLOY_PREVIEW_URL: origins.append(settings.DEPLOY_PREVIEW_URL) # e.g., from Render PR previews
 
 app.add_middleware(
     CORSMiddleware,
@@ -118,12 +109,7 @@ async def read_root():
     return {"status": "ok", "message": f"Welcome to the {settings.PROJECT_NAME}!"}
 
 
-# --- Local Development Runner ---
-# This allows running `python -m src.app.main` from the project root locally
 if __name__ == "__main__":
-    # This block might not run correctly when using `uvicorn app.main:app --reload`
-    # Uvicorn handles the execution in that case.
-    # Keep it for potential direct script execution `python src/app/main.py`
     print(f"Starting Uvicorn server for local development on http://127.0.0.1:8000")
     print(f"Using Supabase URL: {settings.SUPABASE_URL[:20]}...")  # Don't log full URL always
     # Check if keys are loaded (basic check)
@@ -131,11 +117,9 @@ if __name__ == "__main__":
         print("\n*** WARNING: Supabase Service Role Key seems unconfigured! Check .env file. ***\n")
 
     uvicorn.run(
-        app,  # Pass the app object directly when running script
+        app,
         host="127.0.0.1",
         port=8000,
-        reload=False,  # Disable reload when running script directly via IDE
-        # Reload works best when running 'uvicorn src.app.main:app --reload' from terminal
-        # reload_dirs=["src/app"], # This path might be incorrect relative to script execution
-        log_level="debug"  # More verbose logging locally
+        reload=False,
+        log_level="debug"
     )

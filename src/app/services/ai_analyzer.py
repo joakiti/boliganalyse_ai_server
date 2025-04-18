@@ -223,7 +223,7 @@ Hvis Energi Mærkningen mangler, er det pågrund af en system fejl, du skal derf
     ) -> Message:
         """Makes a request to the Claude API, handling retries for rate limits."""
         try:
-            message_response = await self.client.messages.create(
+            message_response = self.client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=CLAUDE_MAX_TOKENS,
                 temperature=CLAUDE_TEMPERATURE,
