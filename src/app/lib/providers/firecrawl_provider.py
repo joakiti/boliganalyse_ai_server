@@ -40,16 +40,14 @@ class FirecrawlProvider(BaseProvider):
         image_url: Optional[str] = None
         response: Optional[Any] = self.firecrawl.scrape_url(
             url,
-            params={'pageOptions': {'formats': ['markdown']}} # Check correct params structure for python lib
+            params={'pageOptions': {'formats': ['markdown']}}
         )
 
-        if not response or not response.data:
+        if not response:
             raise ValueError("No data received from Firecrawl scrape")
 
-        scrape_data = response.data
-
-        extracted_text = scrape_data.get('markdown', '') # Get markdown content
-        metadata = scrape_data.get('metadata', {})
+        extracted_text = response.get('markdown', '') # Get markdown content
+        metadata = response.get('metadata', {})
 
         if metadata.get('ogImage'):
             image_url = metadata['ogImage']

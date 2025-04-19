@@ -48,10 +48,11 @@ class BoligsidenProvider(BaseProvider):
             redirect_url = f"https://www.boligsiden.dk/viderestilling/{case_id}"
             logger.warning(f"Following Boligsiden redirect URL: {redirect_url}")
 
-            headers = {"User-Agent": USER_AGENT}
+            headers = {"User-Agent": USER_AGENT,
+                       }
             async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as client:
                 # Use HEAD request to get final URL without downloading body
-                response = await client.head(redirect_url, headers=headers)
+                response = await client.get(redirect_url, headers=headers)
                 response.raise_for_status() # Check for errors
 
                 final_url = str(response.url) # The URL after following redirects
