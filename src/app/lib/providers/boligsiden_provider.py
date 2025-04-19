@@ -46,7 +46,7 @@ class BoligsidenProvider(BaseProvider):
 
             case_id = udbud_list[0]
             redirect_url = f"https://www.boligsiden.dk/viderestilling/{case_id}"
-            logger.info(f"Following Boligsiden redirect URL: {redirect_url}")
+            logger.warning(f"Following Boligsiden redirect URL: {redirect_url}")
 
             headers = {"User-Agent": USER_AGENT}
             async with httpx.AsyncClient(follow_redirects=True, timeout=HTTP_TIMEOUT) as client:
